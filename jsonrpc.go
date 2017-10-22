@@ -3,23 +3,26 @@ package main
 import "log"
 import "encoding/json"
 import "io"
-import "bytes"
-import "errors"
+
 import "fmt"
 import "strconv"
-import "os/exec"
+
+type Invoker interface {
+	Invoke(request JsonRpcRequest, context interface{}) (string, error)
+	InvokeV2(request JsonRpcRequest, context interface{}, writer io.Writer) error
+}
 
 // Yes, real jsonrpc server would need to
 // handle all possible options but we
 // convert them to string anyway...
 type JsonRpcRequestOptions struct {
-	Options map[string]string
+	Params map[string]string
 }
 
 type JsonRpcRequest struct {
 	Jsonrpc string `json:"jsonrpc"`
 	Method  string `json:"method"`
-	Options JsonRpcRequestOptions
+	Params  JsonRpcRequestOptions
 	// can be any json valid type (including null)
 	// or not present at all
 	ID *interface{} `json:"id"`
@@ -46,10 +49,10 @@ func (w *JsonRpcRequestOptions) UnmarshalJSON(data []byte) error {
 
 		default:
 			log.Println("Invalid case")
-			return errors.New("Expected array or object")
+			return NewStandardError(InvalidRequest)
 		}
 		log.Println(unified)
-		w.Options = unified
+		w.Params = unified
 		return nil
 	} else {
 		return err
@@ -71,53 +74,16 @@ func NewResult(a interface{}) JsonRpcResponse {
 	return JsonRpcResponse{"2.0", nil, a, nil}
 }
 
-func NewError(a *_Error) JsonRpcResponse {
-	return JsonRpcResponse{"2.0", a, nil, nil}
-}
-
-type Argument struct {
-	Name      string
-	Required  bool
-	childrens []*Argument
-	constans  bool
-	value     string
-}
-
-func NewDynamicArgument(name string, required bool) *Argument {
-	a := &Argument{}
-	a.constans = false
-	a.Name = name
-	a.Required = required
-	return a
-}
-
-func NewStaticArgument(name string, required bool, value string) *Argument {
-	a := NewDynamicArgument(name, required)
-	a.constans = true
-	a.value = value
-	return a
-}
-
-func (a *Argument) AddArgument(arg *Argument) {
-	a.childrens = append(a.childrens, arg)
-}
-
-type Jober interface {
-	Jober(arguments []string) (*string, *_Error)
-}
-
-type Method struct {
-	args []*Argument
-	path string
-	job  Jober
-}
-
-type ExecMethod struct {
-	path string
-}
-
-func (m *ExecMethod) InvokeMe(args []string) (*string, *_Error) {
-	return nil, nil
+func NewError(a error) JsonRpcResponse {
+	var b *_Error
+	switch err := a.(type) {
+	case *_Error:
+		b = err
+	default:
+		log.Fatal("Should not happen")
+		b, _ = _NewServerError(InternalError, err.Error()).(*_Error)
+	}
+	return JsonRpcResponse{"2.0", b, nil, nil}
 }
 
 type _Error struct {
@@ -147,8 +113,8 @@ const (
 	_ServerErrorEnd                     = -32099
 )
 
-func _NewServerError(code int, message string) *_Error {
-	if code < int(_ServerErrorStart) || code > int(_ServerErrorEnd) {
+func _NewServerError(code int, message string) error {
+	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
 		log.Panic("Invalid code", code)
 	}
 	var theError _Error
@@ -157,9 +123,10 @@ func _NewServerError(code int, message string) *_Error {
 	return &theError
 }
 
-func _NewStandardError(code StandardErrorType) *_Error {
+func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	var theError _Error
 	theError.Code = int(code)
+	theError.Data = data
 	switch code {
 	case ParseError:
 		theError.Message = "Parse error"
@@ -177,135 +144,78 @@ func _NewStandardError(code StandardErrorType) *_Error {
 	return &theError
 }
 
-func _New_Error(code int, desc string) *_Error {
+func NewStandardError(code StandardErrorType) error {
+	return NewStandardErrorData(code, nil)
+}
+
+func _New_Error(code int, desc string) error {
 	return &_Error{nil, code, desc, nil}
 }
 
-func _WrapError(any error) *_Error {
-	a := &_Error{any, 0, "", nil}
-	return a
+func _WrapError(any error) error {
+	switch err := any.(type) {
+	case *_Error:
+		return err
+	default:
+		return &_Error{any, 0, "", nil}
+	}
 }
 
-func (e _Error) Error() string    { return e.Message }
+func (e _Error) Error() string {
+	if e.internal == nil {
+		return e.internal.Error()
+	}
+	return e.Message
+}
 func (e *_Error) Internal() error { return e.internal }
 
-func _evalueateArgs(arg *Argument, arguments map[string]string, output *bytes.Buffer) *_Error {
-	if arg.constans {
-		_, e := output.WriteString(arg.value)
-		if e != nil {
-			return _WrapError(e)
-		}
-	} else {
-		value, has := arguments[arg.Name]
-		if has {
-			output.WriteString(value)
-			for _, arg := range arg.childrens {
-				if err := _evalueateArgs(arg, arguments, output); err != nil {
-					return err
-				}
-			}
-		} else {
-			if arg.Required {
-				//required option not found
-				return _NewStandardError(InvalidParams)
-			}
-			_, e := output.WriteString(arg.value)
-			if e != nil {
-				return _WrapError(e)
-			}
-		}
+type JsonRpcProcessor struct {
+	invoker Invoker
+}
+
+func NewJsonRpcProcessor(invoker Invoker) *JsonRpcProcessor {
+	return &JsonRpcProcessor{
+		invoker,
 	}
 
+}
+func (p *JsonRpcProcessor) ProcessStreamed(data io.Reader, response io.Writer, context interface{}) error {
 	return nil
 }
 
-func (m *Method) Invoke(arguments map[string]string) (*string, *_Error) {
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	appArguments := make([]string, 0, len(m.args))
-	for _, arg := range m.args {
-		err := _evalueateArgs(arg, arguments, buffer)
-		if err != nil {
-			return nil, _WrapError(err)
-		}
-		appArguments = append(appArguments, buffer.String())
-		buffer.Reset()
-	}
-
-	log.Println(appArguments)
-	process := exec.Command(m.path, appArguments...)
-	// On Linux
-	//process.SysProcAttr = &syscall.SysProcAttr{}
-	//process.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
-
-	stdin, err := process.StdinPipe()
-	if err == nil {
-		stdin.Close()
-	} else {
-		return nil, _NewStandardError(InternalError)
-	}
-	stdout, err := process.StdoutPipe()
-	if err == nil {
-		log.Println(stdout)
-	} else {
-		return nil, _NewStandardError(InternalError)
-	}
-	err = process.Start()
-	log.Println(err)
-
-	buffer.Reset()
-
-	byteReadChunk := make([]byte, 512)
-	for true {
-		read, err := stdout.Read(byteReadChunk)
-		if err != nil {
-			log.Println(err)
-			break
-		}
-		_, e := buffer.Write(byteReadChunk[0:read])
-		if e != nil {
-			return nil, _NewStandardError(InternalError)
-		}
-	}
-	a := buffer.String()
-	return &a, nil
-}
-
-type JsonRpcProcessor struct {
-	_methods map[string]Method
-}
-
-func NewJsonRpcProcessor() JsonRpcProcessor {
-	return JsonRpcProcessor{}
-}
-
-func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer) error {
+func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
+	var jsonResponse JsonRpcResponse
+
 	if err := jsonDecoder.Decode(&request); err != nil {
 		// well we should write response here
-		log.Println(err)
-		return err
-	}
-
-	method, has := p._methods[request.Method]
-	var jsonResponse JsonRpcResponse
-	// Assign last known ID
-	jsonResponse.ID = request.ID
-
-	has = true
-	if has {
-		method = Method{[]*Argument{&Argument{"arg0", true, nil, true, "/C"}, &Argument{"2", true, nil, false, ""}}, "cmd", nil}
-
-		resp, err := method.Invoke(request.Options.Options)
-		if err == nil {
-			jsonResponse = NewResult(resp)
-		} else {
+		switch err := err.(type) {
+		case *_Error:
 			jsonResponse = NewError(err)
+		default:
+			jsonResponse = NewError(NewStandardError(ParseError))
 		}
-	} else {
-		jsonResponse = NewError(_NewStandardError(MethodNotFound))
-	}
+		log.Println(err)
 
+	} else {
+		if request.IsValid() {
+			resp, err := p.invoker.Invoke(request, context)
+			if request.ID == nil {
+				return nil
+			}
+
+			if err == nil {
+				jsonResponse = NewResult(resp)
+			} else {
+				jsonResponse = NewError(err)
+			}
+		} else {
+			jsonResponse = NewError(NewStandardError(InvalidRequest))
+		}
+		// Assign last known ID
+		jsonResponse.ID = request.ID
+	}
 	encoder := json.NewEncoder(response)
 	return encoder.Encode(jsonResponse)
 }
