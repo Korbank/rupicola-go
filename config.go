@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	"path/filepath"
 
@@ -74,7 +75,7 @@ func (w *MethodParam) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 
-	switch tempStruct.Type {
+	switch strings.ToLower(tempStruct.Type) {
 	case "string":
 		w.Type = String
 	case "integer":
