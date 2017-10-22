@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,8 +15,15 @@ import (
 )
 
 func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Accept only POST
 	if r.Method != "POST" {
 		w.Write([]byte("Unsupported"))
+		return
+	}
+	// Check for "payload size". According to spec
+	// Payload = 0 mean ignore
+	if s.parent.limits.PayloadSize > 0 && r.ContentLength > int64(s.parent.limits.PayloadSize) {
+		log.Println("Request to big")
 		return
 	}
 
@@ -27,8 +35,9 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	} else {
 		return
 	}
-	login, password, ok := r.BasicAuth()
+	// Use "basic auth" only if specified in config
 	if s.parent.config.Protocol.AuthBasic.Login != "" {
+		login, password, ok := r.BasicAuth()
 		if !ok {
 			context.isAuthorized = false
 		} else {
@@ -43,11 +52,19 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		// TODO: Detect correct bind point
 		context.allowPrivate = s.bind.AllowPrivate
 	}
+
 	if !context.isAuthorized && !context.allowPrivate {
 		err := json.NewEncoder(w).Encode(NewError(_NewServerError(-32000, "Unauthorized")))
 		log.Panicln(err)
 	} else {
-		s.parent.processor.Process(r.Body, w, &context)
+		if context.isRpc {
+			s.parent.processor.Process(r.Body, w, &context)
+		} else {
+			rpcReq, err := ParseJsonRpcRequest(r.Body)
+			if err == nil {
+				s.parent.InvokeV2(rpcReq, context, w)
+			}
+		}
 	}
 }
 
@@ -64,11 +81,21 @@ type RupicolaRpcContext struct {
 	shouldRequestAuth bool
 	isRpc             bool
 }
+
+type StreamProcessor struct {
+}
+
+func (p *StreamProcessor) Process(reader io.Reader, writer io.Writer, context interface{}) error {
+	// This is version 1, just start streaming
+	return nil
+}
+
 type RupicolaProcessor struct {
-	methods   map[string]MethodDef
-	limits    Limits
-	processor *JsonRpcProcessor
-	config    RupicolaConfig
+	methods         map[string]MethodDef
+	limits          Limits
+	processor       *JsonRpcProcessor
+	streamProcessor *StreamProcessor
+	config          RupicolaConfig
 }
 type RupicolaProcessorChild struct {
 	parent *RupicolaProcessor
@@ -119,22 +146,23 @@ func _evalueateArgs(arg MethodArgs, arguments map[string]string, output *bytes.B
 
 	return false, nil
 }
-func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, writer io.Writer) error {
+
+func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface{}) (*exec.Cmd, error) {
 	log.SetPrefix(req.Method)
 	m, ok := r.methods[req.Method]
 	castedContext, ok := context.(*RupicolaRpcContext)
 	if ok {
 		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
 			castedContext.shouldRequestAuth = true
-			return _NewServerError(-32000, "Unauthorized")
+			return nil, _NewServerError(-32000, "Unauthorized")
 		}
 	} else {
-		return NewStandardError(InternalError)
+		return nil, NewStandardError(InternalError)
 	}
 
 	if !ok || ok && m.Streamed == castedContext.isRpc {
 		log.Println("Not found")
-		return NewStandardError(MethodNotFound)
+		return nil, NewStandardError(MethodNotFound)
 	}
 
 	// Check if required arguments are present
@@ -142,7 +170,7 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 		va, ok := req.Params.Params[name]
 		val := interface{}(va)
 		if !ok && !arg.Optional {
-			return NewStandardError(InvalidParams)
+			return nil, NewStandardError(InvalidParams)
 		}
 
 		switch arg.Type {
@@ -156,7 +184,7 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 			ok = false
 		}
 		if !ok {
-			return NewStandardError(InvalidParams)
+			return nil, NewStandardError(InvalidParams)
 		}
 	}
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
@@ -164,7 +192,7 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 	for _, arg := range m.Invoke.Args {
 		skip, err := _evalueateArgs(arg, req.Params.Params, buffer)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !skip {
 			appArguments = append(appArguments, buffer.String())
@@ -182,8 +210,14 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 	if err == nil {
 		stdin.Close()
 	} else {
-		return NewStandardErrorData(InternalError, "stdin")
+		return nil, NewStandardErrorData(InternalError, "stdin")
 	}
+
+	return process, nil
+}
+
+func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, writer io.Writer) error {
+	process, err := r.prepareCommand(req, context)
 	stdout, err := process.StdoutPipe()
 	if err == nil {
 		log.Println(stdout)
@@ -198,18 +232,30 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 
 	byteReadChunk := make([]byte, 512)
 	var writerLen uint32
+	base64Encoder := base64.NewEncoder(base64.URLEncoding, writer)
+	// should we defer, or err check?
+	defer base64Encoder.Close()
+	defer stdout.Close()
+
 	for true {
 		read, err := stdout.Read(byteReadChunk)
 		if err != nil {
 			log.Println(err)
 			break
 		}
-		wr, e := writer.Write(byteReadChunk[0:read])
+
+		var wr int
+		var e error
+		if false {
+			wr, e = base64Encoder.Write(byteReadChunk[0:read])
+		} else {
+			wr, e = writer.Write(byteReadChunk[0:read])
+		}
 		if e != nil {
 			return NewStandardErrorData(InternalError, "write")
 		}
 		writerLen += uint32(wr)
-		if writerLen > r.limits.MaxResponse {
+		if r.limits.MaxResponse > 0 && writerLen > r.limits.MaxResponse {
 			return NewStandardErrorData(InternalError, "limit")
 		}
 	}

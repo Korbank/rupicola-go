@@ -182,6 +182,12 @@ func NewJsonRpcProcessor(invoker Invoker) *JsonRpcProcessor {
 func (p *JsonRpcProcessor) ProcessStreamed(data io.Reader, response io.Writer, context interface{}) error {
 	return nil
 }
+func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
+	jsonDecoder := json.NewDecoder(reader)
+	var request JsonRpcRequest
+	err := jsonDecoder.Decode(&request)
+	return request, err
+}
 
 func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}) error {
 	jsonDecoder := json.NewDecoder(data)
