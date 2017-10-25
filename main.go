@@ -21,6 +21,7 @@ type RupicolaRpcContext struct {
 	allowPrivate      bool
 	shouldRequestAuth bool
 	isRpc             bool
+	parent            *RupicolaProcessor
 }
 
 type StreamProcessor struct {
@@ -52,6 +53,7 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	var context RupicolaRpcContext
+	context.parent = s.parent
 	if r.RequestURI == s.parent.config.Protocol.Uri.Rpc {
 		context.isRpc = true
 	} else if r.RequestURI == s.parent.config.Protocol.Uri.Streamed {
@@ -82,14 +84,9 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		log.Panicln(err)
 	} else {
 		if context.isRpc {
-			s.parent.processor.Process(r.Body, w, &context)
+			s.parent.processor.Process(r.Body, w, &context, RpcMethod)
 		} else {
-			rpcReq, err := ParseJsonRpcRequest(r.Body)
-			if err == nil {
-				s.parent.InvokeV2(rpcReq, &context, w)
-			} else {
-				log.Println(err)
-			}
+			s.parent.processor.Process(r.Body, w, &context, StreamingMethodLegacy)
 		}
 	}
 }
@@ -99,11 +96,6 @@ func (r *RupicolaProcessor) isValidAuth(login string, password string) bool {
 	passOk := phash.Verify(password, r.config.Protocol.AuthBasic.password)
 	loginOk := login == r.config.Protocol.AuthBasic.Login
 	return passOk || loginOk
-}
-
-func (p *StreamProcessor) Process(reader io.Reader, writer io.Writer, context interface{}) error {
-	// This is version 1, just start streaming
-	return nil
 }
 
 func (arg *MethodArgs) _evalueateArgs(arguments map[string]string, output *bytes.Buffer) (bool, error) {
@@ -151,9 +143,8 @@ func (arg *MethodArgs) _evalueateArgs(arguments map[string]string, output *bytes
 	return false, nil
 }
 
-func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface{}) (*MethodDef, *exec.Cmd, error) {
+func (m *MethodDef) prepareCommand(req JsonRpcRequest, context interface{}) (*RupicolaRpcContext, *exec.Cmd, error) {
 	log.SetPrefix(req.Method)
-	m, okm := r.methods[req.Method]
 	castedContext, ok := context.(*RupicolaRpcContext)
 	if ok {
 		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
@@ -164,11 +155,6 @@ func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface
 	} else {
 		log.Fatalln("Provided context is not pointer")
 		return nil, nil, NewStandardError(InternalError)
-	}
-
-	if !okm || okm && m.Streamed == castedContext.isRpc {
-		log.Println("Not found")
-		return nil, nil, NewStandardError(MethodNotFound)
 	}
 
 	// Check if required arguments are present
@@ -196,8 +182,8 @@ func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface
 		}
 	}
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	appArguments := make([]string, 0, len(m.Invoke.Args))
-	for _, arg := range m.Invoke.Args {
+	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
+	for _, arg := range m.InvokeInfo.Args {
 		skip, err := arg._evalueateArgs(req.Params.Params, buffer)
 		if err != nil {
 			log.Println(err)
@@ -210,7 +196,7 @@ func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface
 	}
 
 	log.Println(appArguments)
-	process := exec.Command(m.Invoke.Exec, appArguments...)
+	process := exec.Command(m.InvokeInfo.Exec, appArguments...)
 	// On Linux
 	//process.SysProcAttr = &syscall.SysProcAttr{}
 	//process.SysProcAttr.Credential = &syscall.Credential{Uid: m.Invoke.RunAs.Uid, Gid: m.Invoke.RunAs.Gid}
@@ -223,11 +209,16 @@ func (r *RupicolaProcessor) prepareCommand(req JsonRpcRequest, context interface
 		return nil, nil, NewStandardErrorData(InternalError, "stdin")
 	}
 
-	return &m, process, nil
+	return castedContext, process, nil
 }
-
-func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, writer io.Writer) error {
-	m, process, err := r.prepareCommand(req, context)
+func (m *MethodDef) Supported() MethodType {
+	if m.Streamed {
+		return StreamingMethod
+	}
+	return RpcMethod
+}
+func (m *MethodDef) Invoke(req JsonRpcRequest, context interface{}, writer io.Writer) error {
+	r, process, err := m.prepareCommand(req, context)
 	if err != nil {
 		return err
 	}
@@ -270,17 +261,11 @@ func (r *RupicolaProcessor) InvokeV2(req JsonRpcRequest, context interface{}, wr
 			return NewStandardErrorData(InternalError, "write")
 		}
 		writerLen += uint32(wr)
-		if r.limits.MaxResponse > 0 && writerLen > r.limits.MaxResponse {
+		if r.parent.limits.MaxResponse > 0 && writerLen > r.parent.limits.MaxResponse {
 			return NewStandardErrorData(InternalError, "limit")
 		}
 	}
 	return nil
-}
-
-func (r *RupicolaProcessor) Invoke(req JsonRpcRequest, context interface{}) (string, error) {
-	outputBuffer := bytes.NewBuffer(nil)
-	err := r.InvokeV2(req, context, outputBuffer)
-	return outputBuffer.String(), err
 }
 
 func main() {
@@ -298,8 +283,10 @@ func main() {
 	rupicolaProcessor.config = configuration
 	rupicolaProcessor.limits = configuration.Limits
 	rupicolaProcessor.methods = configuration.Methods
-	rupicolaProcessor.processor = NewJsonRpcProcessor(&rupicolaProcessor)
-
+	rupicolaProcessor.processor = NewJsonRpcProcessor()
+	for k, v := range configuration.Methods {
+		rupicolaProcessor.processor.AddMethod(k, &v)
+	}
 	for _, bind := range configuration.Protocol.Bind {
 		if bind.Type == "http" {
 			child := RupicolaProcessorChild{&rupicolaProcessor, &bind}

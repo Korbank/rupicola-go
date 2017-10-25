@@ -35,18 +35,18 @@ type MethodParam struct {
 	Optional bool
 }
 type MethodDef struct {
-	Streamed bool
-	Private  bool
-	Encoding MethodEncoding
-	Params   map[string]MethodParam
-	Invoke   struct {
+	Streamed   bool
+	Private    bool
+	Encoding   MethodEncoding
+	Params     map[string]MethodParam
+	InvokeInfo struct {
 		Exec  string
 		Args  []MethodArgs
 		RunAs struct {
 			Gid uint32
 			Uid uint32
 		}
-	}
+	} `yaml:"invoke"`
 }
 
 type MethodParamType int
@@ -238,7 +238,7 @@ func x(a MethodArgs, b map[string]bool) {
 func (w *MethodDef) Validate() error {
 	definedParams := w.Params
 	definedArgs := make(map[string]bool)
-	for _, v := range w.Invoke.Args {
+	for _, v := range w.InvokeInfo.Args {
 		x(v, definedArgs)
 	}
 

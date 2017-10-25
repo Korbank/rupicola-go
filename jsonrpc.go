@@ -6,10 +6,19 @@ import "io"
 
 import "fmt"
 import "strconv"
+import "bytes"
+
+type MethodType int
+
+const (
+	RpcMethod             MethodType = 0
+	StreamingMethodLegacy            = 1
+	StreamingMethod                  = 2
+)
 
 type Invoker interface {
-	Invoke(request JsonRpcRequest, context interface{}) (string, error)
-	InvokeV2(request JsonRpcRequest, context interface{}, writer io.Writer) error
+	Invoke(request JsonRpcRequest, context interface{}, writer io.Writer) error
+	Supported() MethodType
 }
 
 // Yes, real jsonrpc server would need to
@@ -170,13 +179,15 @@ func (e _Error) Error() string {
 func (e *_Error) Internal() error { return e.internal }
 
 type JsonRpcProcessor struct {
-	invoker Invoker
+	methods map[string]Invoker
 }
 
-func NewJsonRpcProcessor(invoker Invoker) *JsonRpcProcessor {
-	return &JsonRpcProcessor{
-		invoker,
-	}
+func (p *JsonRpcProcessor) AddMethod(name string, method Invoker) {
+	p.methods[name] = method
+}
+
+func NewJsonRpcProcessor() *JsonRpcProcessor {
+	return &JsonRpcProcessor{make(map[string]Invoker)}
 
 }
 func (p *JsonRpcProcessor) ProcessStreamed(data io.Reader, response io.Writer, context interface{}) error {
@@ -189,10 +200,20 @@ func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
 	return request, err
 }
 
-func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}) error {
+func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
 	var jsonResponse JsonRpcResponse
+	var placeToWriteData io.Writer
+	var tempBuffer *bytes.Buffer
+
+	// Only LegacyStreaming is Raw
+	if metype == RpcMethod || metype == StreamingMethod {
+		tempBuffer := bytes.NewBuffer(nil)
+		placeToWriteData = tempBuffer
+	} else {
+		placeToWriteData = response
+	}
 
 	if err := jsonDecoder.Decode(&request); err != nil {
 		// well we should write response here
@@ -206,15 +227,21 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context i
 
 	} else {
 		if request.IsValid() {
-			resp, err := p.invoker.Invoke(request, context)
-			if request.ID == nil {
-				return nil
-			}
-
-			if err == nil {
-				jsonResponse = NewResult(resp)
+			m, okm := p.methods[request.Method]
+			if !okm || okm && m.Supported() == metype {
+				log.Println("Not found")
+				jsonResponse = NewError(NewStandardError(MethodNotFound))
 			} else {
-				jsonResponse = NewError(err)
+				err := m.Invoke(request, context, response)
+				if request.ID == nil {
+					return nil
+				}
+
+				if err == nil {
+					jsonResponse = NewResult(tempBuffer.String())
+				} else {
+					jsonResponse = NewError(err)
+				}
 			}
 		} else {
 			jsonResponse = NewError(NewStandardError(InvalidRequest))
@@ -222,6 +249,10 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context i
 		// Assign last known ID
 		jsonResponse.ID = request.ID
 	}
-	encoder := json.NewEncoder(response)
-	return encoder.Encode(jsonResponse)
+	if metype == RpcMethod || metype == StreamingMethod {
+		encoder := json.NewEncoder(placeToWriteData)
+		return encoder.Encode(jsonResponse)
+	} else {
+		return nil
+	}
 }
