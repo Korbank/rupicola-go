@@ -1,4 +1,4 @@
-package main
+package rupicolarpc
 
 import "log"
 import "encoding/json"
@@ -24,52 +24,49 @@ type Invoker interface {
 // Yes, real jsonrpc server would need to
 // handle all possible options but we
 // convert them to string anyway...
-type JsonRpcRequestOptions struct {
-	Params map[string]string
-}
+type JsonRpcRequestOptions map[string]interface{}
 
+// JsonRpcRequest
 type JsonRpcRequest struct {
-	Jsonrpc string `json:"jsonrpc"`
-	Method  string `json:"method"`
+	Jsonrpc string
+	Method  string
 	Params  JsonRpcRequestOptions
 	// can be any json valid type (including null)
 	// or not present at all
-	ID *interface{} `json:"id"`
+	ID *interface{}
 }
 
+// UnmarshalJSON is custom unmarshal for JsonRpcRequestOptions
 func (w *JsonRpcRequestOptions) UnmarshalJSON(data []byte) error {
 	//todo: discard objects?
 	var everything interface{}
 
-	var unified map[string]string
-	if err := json.Unmarshal(data, &everything); err == nil {
-		switch converted := everything.(type) {
-		case map[string]interface{}:
-			unified = make(map[string]string, len(converted))
-			for k, v := range converted {
-				unified[k] = fmt.Sprint(v)
-			}
-		case []interface{}:
-			unified = make(map[string]string, len(converted))
-			for i, v := range converted {
-				// Count arguments from 1 to N
-				unified[strconv.Itoa(i+1)] = fmt.Sprint(v)
-			}
-
-		default:
-			log.Println("Invalid case")
-			return NewStandardError(InvalidRequest)
-		}
-		log.Println(unified)
-		w.Params = unified
-		return nil
-	} else {
+	var unified map[string]interface{}
+	if err := json.Unmarshal(data, &everything); err != nil {
 		return err
 	}
+
+	switch converted := everything.(type) {
+	case map[string]interface{}:
+		unified = converted
+	case []interface{}:
+		unified = make(map[string]interface{}, len(converted))
+		for i, v := range converted {
+			// Count arguments from 1 to N
+			unified[strconv.Itoa(i+1)] = fmt.Sprint(v)
+		}
+
+	default:
+		//log.Printf("Invalid case %v\n", converted)
+		return NewStandardError(InvalidRequest)
+	}
+	*w = unified
+	return nil
+
 }
 
-func (self JsonRpcRequest) IsValid() bool {
-	return self.Jsonrpc == "2.0" && self.Method != ""
+func (r *JsonRpcRequest) IsValid() bool {
+	return r.Jsonrpc == "2.0" && r.Method != ""
 }
 
 type JsonRpcResponse struct {
@@ -89,8 +86,8 @@ func NewError(a error) JsonRpcResponse {
 	case *_Error:
 		b = err
 	default:
-		log.Fatal("Should not happen")
-		b, _ = _NewServerError(InternalError, err.Error()).(*_Error)
+		log.Printf("Should not happen - wrapping unknown error: %v", a)
+		b, _ = NewServerError(InternalError, err.Error()).(*_Error)
 	}
 	return JsonRpcResponse{"2.0", b, nil, nil}
 }
@@ -122,7 +119,7 @@ const (
 	_ServerErrorEnd                     = -32099
 )
 
-func _NewServerError(code int, message string) error {
+func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
 		log.Panic("Invalid code", code)
 	}
@@ -161,22 +158,20 @@ func _New_Error(code int, desc string) error {
 	return &_Error{nil, code, desc, nil}
 }
 
-func _WrapError(any error) error {
-	switch err := any.(type) {
-	case *_Error:
-		return err
-	default:
-		return &_Error{any, 0, "", nil}
-	}
-}
-
-func (e _Error) Error() string {
-	if e.internal == nil {
+func (e *_Error) Error() string {
+	if e.internal != nil {
 		return e.internal.Error()
 	}
 	return e.Message
 }
 func (e *_Error) Internal() error { return e.internal }
+
+type MethodFunc func(in JsonRpcRequest, ctx interface{}, out io.Writer) error
+
+func (m MethodFunc) Invoke(in JsonRpcRequest, ctx interface{}, out io.Writer) error {
+	return m(in, ctx, out)
+}
+func (m MethodFunc) Supported() MethodType { return RpcMethod }
 
 type JsonRpcProcessor struct {
 	methods map[string]Invoker
@@ -186,13 +181,15 @@ func (p *JsonRpcProcessor) AddMethod(name string, method Invoker) {
 	p.methods[name] = method
 }
 
+func (p *JsonRpcProcessor) AddMethodFunc(name string, method MethodFunc) {
+	p.AddMethod(name, method)
+}
+
 func NewJsonRpcProcessor() *JsonRpcProcessor {
 	return &JsonRpcProcessor{make(map[string]Invoker)}
 
 }
-func (p *JsonRpcProcessor) ProcessStreamed(data io.Reader, response io.Writer, context interface{}) error {
-	return nil
-}
+
 func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
 	jsonDecoder := json.NewDecoder(reader)
 	var request JsonRpcRequest
@@ -204,16 +201,7 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context i
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
 	var jsonResponse JsonRpcResponse
-	var placeToWriteData io.Writer
 	var tempBuffer *bytes.Buffer
-
-	// Only LegacyStreaming is Raw
-	if metype == RpcMethod || metype == StreamingMethod {
-		tempBuffer := bytes.NewBuffer(nil)
-		placeToWriteData = tempBuffer
-	} else {
-		placeToWriteData = response
-	}
 
 	if err := jsonDecoder.Decode(&request); err != nil {
 		// well we should write response here
@@ -228,17 +216,30 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context i
 	} else {
 		if request.IsValid() {
 			m, okm := p.methods[request.Method]
-			if !okm || okm && m.Supported() == metype {
+			if !okm || okm && m.Supported() != metype {
 				log.Println("Not found")
 				jsonResponse = NewError(NewStandardError(MethodNotFound))
 			} else {
-				err := m.Invoke(request, context, response)
+				var placeToWriteData io.Writer
+				// Only LegacyStreaming is Raw
+				if metype == RpcMethod || metype == StreamingMethod {
+					tempBuffer = bytes.NewBuffer(nil)
+					placeToWriteData = tempBuffer
+				} else {
+					placeToWriteData = response
+				}
+
+				err := m.Invoke(request, context, placeToWriteData)
 				if request.ID == nil {
 					return nil
 				}
 
 				if err == nil {
-					jsonResponse = NewResult(tempBuffer.String())
+					if tempBuffer.Len() == 0 {
+						jsonResponse = NewResult(nil)
+					} else {
+						jsonResponse = NewResult(tempBuffer.String())
+					}
 				} else {
 					jsonResponse = NewError(err)
 				}
@@ -250,9 +251,8 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context i
 		jsonResponse.ID = request.ID
 	}
 	if metype == RpcMethod || metype == StreamingMethod {
-		encoder := json.NewEncoder(placeToWriteData)
+		encoder := json.NewEncoder(response)
 		return encoder.Encode(jsonResponse)
-	} else {
-		return nil
 	}
+	return nil
 }
