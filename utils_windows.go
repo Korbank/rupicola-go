@@ -1,10 +1,9 @@
 package main
 
 import (
-	"log"
 	"os/exec"
 )
 
 func SetUserGroup(process *exec.Cmd, m *MethodDef) {
-	log.Println("Windows code")
+	m.logger.Warn("windows doesn't support uid/guid")
 }

@@ -1,21 +1,19 @@
 package main
 
 import (
+	"./rupicolarpc"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
+	log "github.com/inconshreveable/log15"
+	"github.com/spf13/pflag"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"time"
-
-	"./rupicolarpc"
-	"github.com/spf13/pflag"
 )
 
 var (
@@ -45,9 +43,10 @@ type RupicolaProcessorChild struct {
 }
 
 func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
 	// Accept only POST
 	if r.Method != "POST" {
-		log.Printf("Method '%s' not allowed\n", r.Method)
+		log.Warn("not allowed", "method", r.Method)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -55,7 +54,7 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// Payload = 0 mean ignore
 	if s.parent.limits.PayloadSize > 0 && r.ContentLength > int64(s.parent.limits.PayloadSize) {
 		w.WriteHeader(http.StatusBadRequest)
-		log.Println("Request to big")
+		log.Warn("request too big")
 		return
 	}
 
@@ -70,8 +69,7 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		context.isRPC = false
 		streamingVersion := r.Header.Get("RupicolaStreamingVersion")
 		switch streamingVersion {
-		case "":
-		case "1":
+		case "", "1":
 			rpcOperationMode = rupicolarpc.StreamingMethodLegacy
 		case "2":
 			rpcOperationMode = rupicolarpc.StreamingMethod
@@ -91,9 +89,10 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	// Don't like this hack... we should not use this outside framework...
 	if !context.isAuthorized && !context.allowPrivate {
-		err := json.NewEncoder(w).Encode(rupicolarpc.NewError(RpcUnauthorizedError))
+		err := json.NewEncoder(w).Encode(rupicolarpc.NewError(RpcUnauthorizedError, nil))
 		if err != nil {
-			log.Panicln(err)
+			log.Crit("unknown error", "err", err)
+			panic(err)
 		}
 	} else {
 		s.parent.processor.Process(r.Body, w, &context, rpcOperationMode)
@@ -105,11 +104,12 @@ func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context inter
 	if ok {
 		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
 			castedContext.shouldRequestAuth = true
-			log.Println("Unauth")
+			log.Warn("Unauthorized")
 			return nil, nil, RpcUnauthorizedError
 		}
 	} else {
-		log.Fatalln("Provided context is not pointer")
+		log.Crit("Provided context is not pointer")
+		panic("Provided context is not pointer")
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
 	}
 
@@ -122,7 +122,7 @@ func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context inter
 	for _, arg := range m.InvokeInfo.Args {
 		skip, err := arg._evalueateArgs(req.Params, buffer)
 		if err != nil {
-			log.Println(err)
+			log.Error("error", "err", err)
 			return nil, nil, err
 		}
 		if !skip {
@@ -131,7 +131,7 @@ func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context inter
 		buffer.Reset()
 	}
 
-	log.Println(appArguments)
+	m.logger.Debug("prepared method invocation", "args", appArguments)
 	process := exec.Command(m.InvokeInfo.Exec, appArguments...)
 
 	// Make it "better"
@@ -141,109 +141,81 @@ func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context inter
 	if err == nil {
 		stdin.Close()
 	} else {
-		log.Println(err)
+		m.logger.Error("stdin", err)
 		return nil, nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdin")
 	}
 
 	return castedContext, process, nil
 }
 
-// Supported is implementation of jsonrpc.Invoker
-func (m *MethodDef) Supported() rupicolarpc.MethodType {
-	if m.Streamed {
-		return rupicolarpc.StreamingMethodLegacy
-	}
-	return rupicolarpc.RpcMethod
-}
-
 // Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(req rupicolarpc.JsonRpcRequest, context interface{}, out io.Writer) error {
+func (m *MethodDef) Invoke2(req rupicolarpc.JsonRpcRequest, context interface{}) (interface{}, error) {
 	r, process, err := m.prepareCommand(req, context)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stdout, err := process.StdoutPipe()
-	if err == nil {
-		log.Println(stdout)
-	} else {
-		return rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
+	if err != nil {
+		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
 	}
 	err = process.Start()
 	if err != nil {
-		log.Println(err)
-		return rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "start")
+		m.logger.Error("err", "err", err)
+		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
 	}
-	log.Println(err)
 
-	byteReadChunk := make([]byte, commandBufferSize)
-	var writerLen uint32
-	var writer io.Writer
+	pr, pw := io.Pipe()
+	writer := io.Writer(pw)
+
+	if r.parent.limits.MaxResponse > 0 {
+		writer = rupicolarpc.LimitWrite(writer, int64(r.parent.limits.MaxResponse))
+	}
+
 	if m.Encoding == Base64 {
-		writerEncoder := base64.NewEncoder(base64.URLEncoding, out)
+		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder
-	} else {
-		writer = out
 	}
-
-	//todo: this is fooked up
-	heartBeat := make(chan error)
-	var timer <-chan time.Time
-	// Exec timeout, czas na CALKOWITE wykonanie (tylko rpc)
-	if r.parent.limits.ExecTimeout > 0 {
-		timer = time.After(r.parent.limits.ExecTimeout)
-	}
-
-	// TODO: Run some task in bg?
 
 	go func() {
+		defer pw.Close()
 
 		time.Sleep(m.InvokeInfo.Delay)
-
+		m.logger.Debug("Read loop started")
+		byteReadChunk := make([]byte, commandBufferSize)
 		for true {
 			read, err := stdout.Read(byteReadChunk)
 			if err != nil {
 				stdout.Close()
-
-				log.Println(err)
-				heartBeat <- err
+				if err != io.EOF {
+					m.logger.Error("error reading from pipe", "err", err)
+				} else {
+					m.logger.Debug("reading from pipe finished")
+				}
+				pw.CloseWithError(err)
+				//heartBeat <- err
 				break
 			}
 
-			wr, e := writer.Write(byteReadChunk[0:read])
-
-			if e != nil {
+			if _, e := writer.Write(byteReadChunk[0:read]); e != nil {
+				// Ignore pipe error for delayed execution
+				if e != io.ErrClosedPipe || m.InvokeInfo.Delay <= 0 {
+					log.Error("Writing to output failed", "err", e)
+				}
 				stdout.Close()
-				heartBeat <- rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "write")
-			}
-			writerLen += uint32(wr)
-			if r.parent.limits.MaxResponse > 0 && writerLen > r.parent.limits.MaxResponse {
-				stdout.Close()
-				heartBeat <- rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "limit")
+				pw.CloseWithError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "write"))
+				break
 			}
 		}
 	}()
-
 	// TODO: Check thys
 	if m.InvokeInfo.Delay != 0 {
+		pw.Close()
 		// for "delayed" execution we cannot provide meaningful data
-		// so if we haven't failed before just
-		_, err := io.WriteString(writer, "OK")
-		return err
+		return "OK", nil
 	}
-
-	select {
-	case beat := <-heartBeat:
-		if beat == io.EOF {
-			return nil
-		}
-		return beat
-	case <-timer:
-		log.Println("Timeout for Exec")
-		return errors.New("Timeout")
-
-	}
+	return pr, nil
 }
 
 func main() {
@@ -255,19 +227,28 @@ func main() {
 	}
 	configuration, err := ParseConfig(*configPath)
 	if err != nil {
-		log.Fatalln(err)
+		log.Crit("err", err)
+		os.Exit(1)
 	}
 	if len(configuration.Methods) == 0 {
-		log.Fatalln("No method defined in config")
+		log.Crit("No method defined in config")
+		os.Exit(1)
 	}
 	if len(configuration.Protocol.Bind) == 0 {
-		log.Fatalf("No valid bind points")
+		log.Crit("No valid bind points")
+		os.Exit(1)
 	}
 
 	rupicolaProcessor := RupicolaProcessor{config: configuration, limits: configuration.Limits, processor: rupicolarpc.NewJsonRpcProcessor()}
 
 	for k, v := range configuration.Methods {
-		rupicolaProcessor.processor.AddMethod(k, v)
+		var metype rupicolarpc.MethodType
+		if v.Streamed {
+			metype = rupicolarpc.StreamingMethodLegacy
+		} else {
+			metype = rupicolarpc.RpcMethod
+		}
+		rupicolaProcessor.processor.AddMethod(k, metype, v)
 	}
 
 	failureChannel := make(chan error)
@@ -288,16 +269,16 @@ func main() {
 		go func() {
 			switch bind.Type {
 			case Http:
-				log.Printf("Starting HTTP listener %s@%d\n", bind.Address, bind.Port)
+				log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
 				failureChannel <- srv.ListenAndServe()
 
 			case Https:
-				log.Printf("Starting HTTPS listener %s@%d\n", bind.Address, bind.Port)
+				log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
 				failureChannel <- srv.ListenAndServeTLS(bind.Cert, bind.Key)
 
 			case Unix:
 				//todo: check
-				log.Printf("Starting UNIX listener %s\n", bind.Address)
+				log.Info("atarting listener", "type", "unix", "address", bind.Address)
 				srv.Addr = bind.Address
 				ln, err := net.Listen("unix", bind.Address)
 				if err != nil {
@@ -310,6 +291,6 @@ func main() {
 	}
 
 	err = <-failureChannel
-	log.Printf("Program will shut down now due to encountered error %v\n", err)
+	log.Crit("Program will shut down now due to encountered error", "error", err)
 	os.Exit(1)
 }

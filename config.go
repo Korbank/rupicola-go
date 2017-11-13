@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	log "github.com/inconshreveable/log15"
 	"io/ioutil"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -59,6 +59,7 @@ type MethodDef struct {
 		Args  []MethodArgs
 		RunAs RunAs `yaml:",omitempty"`
 	} `yaml:"invoke"`
+	logger log.Logger
 }
 
 // MethodParamType ...
@@ -237,7 +238,8 @@ func (w *MethodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		w.compound = true
 		return nil
 	}
-	log.Panic(err)
+	log.Crit("err", "err", err)
+	panic(err)
 	return nil
 }
 
@@ -258,7 +260,7 @@ func (conf *RupicolaConfig) includesFromConf(info IncludeConfig) error {
 		if info.Required {
 			return err
 		}
-		log.Printf("Optional config path \"%v\" not found\n", info.Name)
+		log.Warn("Optional config not found", "path", info.Name)
 		return nil
 	}
 
@@ -330,12 +332,13 @@ func (m *MethodDef) Validate() error {
 			delete(definedParams, k)
 		} else {
 			// Fatal, or just return error?
+			m.logger.Error("undeclared param", "name", k)
 			return fmt.Errorf("Undeclared param '%v' in arguments", k)
 		}
 	}
 
 	for k := range definedParams {
-		log.Printf("Unused parameter '%v' defined\n", k)
+		m.logger.Warn("unused parameter defined", "name", k)
 	}
 	return nil
 }
@@ -373,7 +376,8 @@ func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
 		return cfg, err
 	}
 	for k, v := range cfg.Methods {
-		log.Printf("[%s]: Streamed -> %v\n", k, v.Streamed)
+		v.logger = log.New("method", k)
+		v.logger.Debug("method info", "streamed", v.Streamed)
 		if err := v.Validate(); err != nil {
 			return nil, err
 		}
@@ -402,7 +406,7 @@ func (m *MethodDef) CheckParams(req *rupicolarpc.JsonRpcRequest) error {
 	for name, arg := range m.Params {
 		val, ok := req.Params[name]
 		if !ok && !arg.Optional {
-			log.Println("invalid param")
+			m.logger.Error("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 
@@ -417,7 +421,7 @@ func (m *MethodDef) CheckParams(req *rupicolarpc.JsonRpcRequest) error {
 			ok = false
 		}
 		if !ok {
-			log.Println("invalid param")
+			m.logger.Error("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 	}
@@ -435,9 +439,6 @@ func (arg *MethodArgs) _evalueateArgs(arguments map[string]interface{}, output *
 		// Convert value to string
 		value = fmt.Sprint(valueRaw)
 
-		if arg.compound != (len(arg.Child) != 0) {
-			log.Panicln("Oooh..")
-		}
 		if arg.Param == "self" {
 			has = true
 			if arguments == nil {

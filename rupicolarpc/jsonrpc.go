@@ -1,24 +1,29 @@
 package rupicolarpc
 
-import "log"
+import log "github.com/inconshreveable/log15"
 import "encoding/json"
 import "io"
 
 import "fmt"
 import "strconv"
 import "bytes"
+import "time"
+import "context"
+import "errors"
 
 type MethodType int
 
 const (
-	RpcMethod             MethodType = 0
-	StreamingMethodLegacy            = 1
-	StreamingMethod                  = 2
+	RpcMethod             MethodType = 1
+	StreamingMethodLegacy            = 2
+	StreamingMethod                  = 4
+	unknownMethod                    = 0
 )
 
 type Invoker interface {
-	Invoke(request JsonRpcRequest, context interface{}, writer io.Writer) error
-	Supported() MethodType
+	//Invoke(request JsonRpcRequest, context interface{}, writer io.Writer) error
+	Invoke2(request JsonRpcRequest, context interface{}) (interface{}, error)
+	//Supported() MethodType
 }
 
 // Yes, real jsonrpc server would need to
@@ -65,7 +70,7 @@ func (w *JsonRpcRequestOptions) UnmarshalJSON(data []byte) error {
 
 }
 
-func (r *JsonRpcRequest) IsValid() bool {
+func (r *JsonRpcRequest) isValid() bool {
 	return r.Jsonrpc == "2.0" && r.Method != ""
 }
 
@@ -76,20 +81,20 @@ type JsonRpcResponse struct {
 	ID      interface{} `json:"id,omitempty"`
 }
 
-func NewResult(a interface{}) JsonRpcResponse {
-	return JsonRpcResponse{"2.0", nil, a, nil}
+func NewResult(a interface{}, id interface{}) *JsonRpcResponse {
+	return &JsonRpcResponse{"2.0", nil, a, id}
 }
 
-func NewError(a error) JsonRpcResponse {
+func NewError(a error, id interface{}) *JsonRpcResponse {
 	var b *_Error
 	switch err := a.(type) {
 	case *_Error:
 		b = err
 	default:
-		log.Printf("Should not happen - wrapping unknown error: %v", a)
-		b, _ = NewServerError(InternalError, err.Error()).(*_Error)
+		log.Debug("Should not happen - wrapping unknown error:", "err", a)
+		b, _ = NewStandardErrorData(InternalError, err.Error()).(*_Error)
 	}
-	return JsonRpcResponse{"2.0", b, nil, nil}
+	return &JsonRpcResponse{"2.0", b, nil, id}
 }
 
 type _Error struct {
@@ -121,7 +126,8 @@ const (
 
 func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
-		log.Panic("Invalid code", code)
+		log.Crit("Invalid code", "code", code)
+		panic("invlid code")
 	}
 	var theError _Error
 	theError.Code = code
@@ -145,7 +151,8 @@ func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	case InternalError:
 		theError.Message = "Internal error"
 	default:
-		log.Panic("WTF")
+		log.Crit("WTF")
+		panic("WTF")
 	}
 	return &theError
 }
@@ -166,27 +173,62 @@ func (e *_Error) Error() string {
 }
 func (e *_Error) Internal() error { return e.internal }
 
-type MethodFunc func(in JsonRpcRequest, ctx interface{}, out io.Writer) error
+type MethodFunc func(in JsonRpcRequest, ctx interface{}) (interface{}, error)
 
 func (m MethodFunc) Invoke(in JsonRpcRequest, ctx interface{}, out io.Writer) error {
-	return m(in, ctx, out)
+	return nil
 }
-func (m MethodFunc) Supported() MethodType { return RpcMethod }
+func (m MethodFunc) Invoke2(in JsonRpcRequest, ctx interface{}) (interface{}, error) {
+	return m(in, ctx)
+}
 
+type LimitedWriter struct {
+	W io.Writer
+	N int64
+}
+
+func LimitWrite(w io.Writer, n int64) io.Writer {
+	return &LimitedWriter{w, n}
+}
+
+func (w *LimitedWriter) Write(p []byte) (n int, err error) {
+	if w.N <= 0 || int64(len(p)) > w.N {
+		return 0, io.ErrShortWrite
+	}
+
+	n, err = w.W.Write(p)
+	w.N -= int64(n)
+	return
+}
+
+type Limits struct {
+	ReadTimeout time.Duration
+	ExecTimeout time.Duration
+	MaxResponse uint32
+}
 type JsonRpcProcessor struct {
-	methods map[string]Invoker
+	methods map[string]map[MethodType]Invoker
+	Limits  Limits
 }
 
-func (p *JsonRpcProcessor) AddMethod(name string, method Invoker) {
-	p.methods[name] = method
+func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) {
+	container, ok := p.methods[name]
+	if !ok {
+		container = make(map[MethodType]Invoker)
+		p.methods[name] = container
+	}
+	container[metype] = method
 }
 
-func (p *JsonRpcProcessor) AddMethodFunc(name string, method MethodFunc) {
-	p.AddMethod(name, method)
+func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method MethodFunc) {
+	p.AddMethod(name, metype, method)
 }
 
 func NewJsonRpcProcessor() *JsonRpcProcessor {
-	return &JsonRpcProcessor{make(map[string]Invoker)}
+	return &JsonRpcProcessor{
+		make(map[string]map[MethodType]Invoker),
+		Limits{10 * time.Second, 0, 5242880},
+	}
 
 }
 
@@ -196,63 +238,116 @@ func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
 	err := jsonDecoder.Decode(&request)
 	return request, err
 }
-
-func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}, metype MethodType) error {
+func (p *JsonRpcProcessor) processWrapper(data io.Reader, response io.Writer, ctx interface{}, metype MethodType) *JsonRpcResponse {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
-	var jsonResponse JsonRpcResponse
-	var tempBuffer *bytes.Buffer
 
 	if err := jsonDecoder.Decode(&request); err != nil {
-		// well we should write response here
-		switch err := err.(type) {
-		case *_Error:
-			jsonResponse = NewError(err)
-		default:
-			jsonResponse = NewError(NewStandardError(ParseError))
+		return NewError(NewStandardError(ParseError), nil)
+	}
+
+	if !request.isValid() {
+		return NewError(NewStandardError(InvalidRequest), request.ID)
+	}
+	// check if method with given name exists
+	ms, okm := p.methods[request.Method]
+	if !okm {
+		log.Error("not found", "method", request.Method)
+		return NewError(NewStandardError(MethodNotFound), request.ID)
+	}
+	// now check is requested type is supported
+	m, okm := ms[metype]
+	if !okm {
+		log.Error("required type for method not found\n", "type", metype, "method", request.Method)
+		return NewError(NewStandardError(MethodNotFound), request.ID)
+	}
+
+	// TIMEOUT HANDLING START
+	kontext := context.Background()
+	if metype == RpcMethod && p.Limits.ExecTimeout > 0 {
+		ctx, cancel := context.WithTimeout(kontext, p.Limits.ExecTimeout)
+		defer cancel()
+		kontext = ctx
+	}
+
+	var result interface{}
+	var err error
+	done := make(chan struct{})
+	go func() {
+		result, err = m.Invoke2(request, ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Debug("Done")
+	case <-kontext.Done():
+		log.Debug("timeout", "err", kontext.Err())
+		return NewError(errors.New("Timeout"), request.ID)
+	}
+	// TIMEOUT HANDLING END
+
+	// Rpc method could return reader and inside use routine to provide endless stream of data
+	// to prevent this we are using same exec context and previously set timeout
+	switch result := result.(type) {
+	case io.Reader:
+		var resultOut *JsonRpcResponse
+		done = make(chan struct{})
+		go func() {
+			defer close(done)
+
+			// Legacy streaming is dumb, just copy bytes from source to targes
+			switch metype {
+			case StreamingMethodLegacy:
+				io.Copy(response, result)
+				resultOut = nil
+			case StreamingMethod:
+				log.Crit("UNIMPLEMENTED")
+				resultOut = NewResult("OK", request.ID)
+			case RpcMethod:
+				buffer := bytes.NewBuffer(nil)
+				io.Copy(buffer, result)
+				resultOut = NewResult(buffer.String(), request.ID)
+			default:
+				log.Crit("Should never happen")
+				resultOut = nil
+				panic("AAA")
+			}
+		}()
+		select {
+		case <-done:
+			return resultOut
+		case <-kontext.Done():
+			return NewError(errors.New("Timeout"), request.ID)
 		}
-		log.Println(err)
+	default:
+		return NewResult(result, request.ID)
+	}
+}
 
-	} else {
-		if request.IsValid() {
-			m, okm := p.methods[request.Method]
-			if !okm || okm && m.Supported() != metype {
-				log.Println("Not found")
-				jsonResponse = NewError(NewStandardError(MethodNotFound))
-			} else {
-				var placeToWriteData io.Writer
-				// Only LegacyStreaming is Raw
-				if metype == RpcMethod || metype == StreamingMethod {
-					tempBuffer = bytes.NewBuffer(nil)
-					placeToWriteData = tempBuffer
-				} else {
-					placeToWriteData = response
-				}
+func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}, metype MethodType) error {
+	rponse := p.processWrapper(data, response, context, metype)
+	if rponse != nil {
+		if rponse.ID == nil {
+			return nil
+		}
 
-				err := m.Invoke(request, context, placeToWriteData)
-				if request.ID == nil {
-					return nil
-				}
-
-				if err == nil {
-					if tempBuffer.Len() == 0 {
-						jsonResponse = NewResult(nil)
-					} else {
-						jsonResponse = NewResult(tempBuffer.String())
-					}
-				} else {
-					jsonResponse = NewError(err)
-				}
+		if metype == RpcMethod || metype == StreamingMethod {
+			encoder := json.NewEncoder(response)
+			return encoder.Encode(rponse)
+		}
+		if rponse.Error == nil {
+			switch result := rponse.Result.(type) {
+			case string:
+				_, err := response.Write([]byte(result))
+				return err
+			default:
+				log.Crit("WTH")
+				panic("AAA")
 			}
 		} else {
-			jsonResponse = NewError(NewStandardError(InvalidRequest))
+			return nil
 		}
-		// Assign last known ID
-		jsonResponse.ID = request.ID
-	}
-	if metype == RpcMethod || metype == StreamingMethod {
-		encoder := json.NewEncoder(response)
-		return encoder.Encode(jsonResponse)
 	}
 	return nil
 }
