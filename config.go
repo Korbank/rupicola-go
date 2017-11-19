@@ -4,17 +4,19 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	log "github.com/inconshreveable/log15"
 	"io/ioutil"
 	"os"
 	"strings"
 	"time"
 
-	"./rupicolarpc"
+	log "github.com/inconshreveable/log15"
+
 	"crypto/subtle"
 	"encoding/json"
-	"gopkg.in/yaml.v2"
 	"path/filepath"
+
+	"./rupicolarpc"
+	"gopkg.in/yaml.v2"
 )
 
 // Limits ...
@@ -42,6 +44,7 @@ type MethodParam struct {
 	Optional bool
 }
 
+// RunAs ...
 type RunAs struct {
 	Uid *uint32
 	Gid *uint32
@@ -67,6 +70,8 @@ type MethodParamType int
 
 // MethodEncoding ...
 type MethodEncoding int
+
+// BindType ...
 type BindType int
 
 const (

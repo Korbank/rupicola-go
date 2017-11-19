@@ -9,40 +9,50 @@ import "strconv"
 import "bytes"
 import "time"
 import "context"
-import "errors"
 
+// ContextKey : Supported keys in context
+type ContextKey int
+
+const (
+	// RupicalaContextKeyContext : Custom data assigned to process
+	RupicalaContextKeyContext ContextKey = 0
+)
+
+// MethodType : Supported or requested method response format
 type MethodType int
 
 const (
-	RpcMethod             MethodType = 1
-	StreamingMethodLegacy            = 2
-	StreamingMethod                  = 4
-	unknownMethod                    = 0
+	// RPCMethod : Json RPC 2.0
+	RPCMethod MethodType = 1
+	// StreamingMethodLegacy : Basic streaming format without header or footer. Can be base64 encoded.
+	StreamingMethodLegacy = 2
+	// StreamingMethod : Line JSON encoding with header and footer
+	StreamingMethod = 4
+	unknownMethod   = 0
 )
 
+// Invoker is interface for method invoked by rpc server
 type Invoker interface {
-	//Invoke(request JsonRpcRequest, context interface{}, writer io.Writer) error
-	Invoke2(request JsonRpcRequest, context interface{}) (interface{}, error)
-	//Supported() MethodType
+	Invoke(context.Context, JsonRpcRequest) (interface{}, error)
 }
 
 // Yes, real jsonrpc server would need to
 // handle all possible options but we
 // convert them to string anyway...
-type JsonRpcRequestOptions map[string]interface{}
+type jsonRPCRequestOptions map[string]interface{}
 
 // JsonRpcRequest
 type JsonRpcRequest struct {
 	Jsonrpc string
 	Method  string
-	Params  JsonRpcRequestOptions
+	Params  jsonRPCRequestOptions
 	// can be any json valid type (including null)
 	// or not present at all
 	ID *interface{}
 }
 
 // UnmarshalJSON is custom unmarshal for JsonRpcRequestOptions
-func (w *JsonRpcRequestOptions) UnmarshalJSON(data []byte) error {
+func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 	//todo: discard objects?
 	var everything interface{}
 
@@ -81,10 +91,12 @@ type JsonRpcResponse struct {
 	ID      interface{} `json:"id,omitempty"`
 }
 
+// NewResult : Generate new Result response
 func NewResult(a interface{}, id interface{}) *JsonRpcResponse {
 	return &JsonRpcResponse{"2.0", nil, a, id}
 }
 
+// NewError : Generate new Error response
 func NewError(a error, id interface{}) *JsonRpcResponse {
 	var b *_Error
 	switch err := a.(type) {
@@ -122,6 +134,13 @@ const (
 	InternalError                       = -32603
 	_ServerErrorStart                   = -32000
 	_ServerErrorEnd                     = -32099
+)
+
+var (
+	ParseErrorError     = NewStandardError(ParseError)
+	MethodNotFoundError = NewStandardError(MethodNotFound)
+	InvalidRequestError = NewStandardError(InvalidRequest)
+	TimeoutError        = NewServerError(-32099, "Timeout")
 )
 
 func NewServerError(code int, message string) error {
@@ -173,13 +192,29 @@ func (e *_Error) Error() string {
 }
 func (e *_Error) Internal() error { return e.internal }
 
-type MethodFunc func(in JsonRpcRequest, ctx interface{}) (interface{}, error)
+type methodFunc func(in JsonRpcRequest, ctx interface{}) (interface{}, error)
 
-func (m MethodFunc) Invoke(in JsonRpcRequest, ctx interface{}, out io.Writer) error {
-	return nil
-}
-func (m MethodFunc) Invoke2(in JsonRpcRequest, ctx interface{}) (interface{}, error) {
+func (m methodFunc) Invoke(ctx context.Context, in JsonRpcRequest) (interface{}, error) {
 	return m(in, ctx)
+}
+
+type ExceptionalLimitedReader struct {
+	R io.Reader
+	N int64
+}
+
+func ExceptionalLimitRead(r io.Reader, n int64) io.Reader {
+	return &ExceptionalLimitedReader{r, n}
+}
+
+func (r *ExceptionalLimitedReader) Read(p []byte) (n int, err error) {
+	if r.N <= 0 || int64(len(p)) > r.N {
+		return 0, io.ErrUnexpectedEOF
+	}
+
+	n, err = r.R.Read(p)
+	r.N -= int64(n)
+	return
 }
 
 type LimitedWriter struct {
@@ -193,7 +228,7 @@ func LimitWrite(w io.Writer, n int64) io.Writer {
 
 func (w *LimitedWriter) Write(p []byte) (n int, err error) {
 	if w.N <= 0 || int64(len(p)) > w.N {
-		return 0, io.ErrShortWrite
+		return 0, io.ErrUnexpectedEOF
 	}
 
 	n, err = w.W.Write(p)
@@ -220,7 +255,7 @@ func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invo
 	container[metype] = method
 }
 
-func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method MethodFunc) {
+func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method methodFunc) {
 	p.AddMethod(name, metype, method)
 }
 
@@ -238,116 +273,308 @@ func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
 	err := jsonDecoder.Decode(&request)
 	return request, err
 }
-func (p *JsonRpcProcessor) processWrapper(data io.Reader, response io.Writer, ctx interface{}, metype MethodType) *JsonRpcResponse {
+
+func (p *JsonRpcProcessor) processWrapper(data io.Reader, response RpcResponser, ctx context.Context, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
 
 	if err := jsonDecoder.Decode(&request); err != nil {
-		return NewError(NewStandardError(ParseError), nil)
+		response.SetResponseError(ParseErrorError)
+		return err
 	}
+	response.SetID(request.ID)
 
 	if !request.isValid() {
-		return NewError(NewStandardError(InvalidRequest), request.ID)
+		err := NewStandardError(InvalidRequest)
+		response.SetResponseError(err)
+		return err
 	}
 	// check if method with given name exists
 	ms, okm := p.methods[request.Method]
 	if !okm {
 		log.Error("not found", "method", request.Method)
-		return NewError(NewStandardError(MethodNotFound), request.ID)
+		response.SetResponseError(MethodNotFoundError)
+		return MethodNotFoundError
 	}
 	// now check is requested type is supported
 	m, okm := ms[metype]
 	if !okm {
 		log.Error("required type for method not found\n", "type", metype, "method", request.Method)
-		return NewError(NewStandardError(MethodNotFound), request.ID)
+		response.SetResponseError(MethodNotFoundError)
+		return MethodNotFoundError
 	}
 
-	// TIMEOUT HANDLING START
+	result, err := m.Invoke(ctx, request)
+	if err != nil {
+		response.SetResponseError(err)
+		return err
+	}
+	// Rpc method could return reader and inside use routine to provide endless stream of data
+	// to prevent this we are using same exec context and previously set timeout
+	switch result := result.(type) {
+	case io.Reader:
+		_, err := io.Copy(response, result)
+		if err != nil && err != io.EOF {
+			response.SetResponseError(err)
+			return err
+		}
+		return nil
+
+	default:
+		response.SetResponseResult(result)
+		return nil
+	}
+}
+
+type RpcResponse struct {
+	dst       *json.Encoder
+	raw       io.Writer
+	id        interface{}
+	writeUsed bool
+	buffer    *bytes.Buffer
+}
+type RpcResponser interface {
+	io.WriteCloser
+	SetID(interface{})
+	SetResponseResult(interface{})
+	SetResponseError(error)
+}
+
+func NewRpcResponse(w io.Writer) RpcResponser {
+	buffer := bytes.NewBuffer(nil)
+	return &RpcResponse{
+		dst:       json.NewEncoder(buffer),
+		raw:       w,
+		writeUsed: false,
+		buffer:    buffer,
+	}
+}
+
+func (b *RpcResponse) Close() error {
+	if b.buffer != nil {
+		if b.writeUsed {
+			b.SetResponseResult(b.buffer.String())
+		}
+		n, err := io.Copy(b.raw, b.buffer)
+		log.Debug("close RpcResponse", "n", n, "err", err)
+	}
+	b.buffer = nil
+	b.dst = nil
+	b.raw = nil
+	return nil
+}
+
+func (b *RpcResponse) SetID(id interface{}) {
+	if b.id != nil {
+		log.Warn("SetID invoked twice")
+	}
+	b.id = id
+}
+func (b *RpcResponse) Write(p []byte) (int, error) {
+	if b.buffer != nil {
+		b.writeUsed = true
+		return b.buffer.Write(p)
+	}
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (b *RpcResponse) SetResponseError(e error) {
+	b.writeUsed = false
+	b.buffer.Reset()
+	b.dst.Encode(NewError(e, b.id))
+}
+
+func (b *RpcResponse) SetResponseResult(result interface{}) {
+	b.writeUsed = false
+	b.buffer.Reset()
+	b.dst.Encode(NewResult(result, b.id))
+}
+
+type StreamingResponse struct {
+	raw       io.Writer
+	buffer    *bytes.Buffer
+	enc       *json.Encoder
+	id        interface{}
+	chunkSize int
+}
+
+func newStreamingResponse(writer io.Writer, n int) *StreamingResponse {
+	return &StreamingResponse{
+		raw:       writer,
+		buffer:    bytes.NewBuffer(make([]byte, 0, 128)),
+		enc:       json.NewEncoder(writer),
+		chunkSize: n,
+	}
+}
+
+func (b *StreamingResponse) Close() error {
+	b.commit()
+	if b.enc != nil {
+		// Write footer (if we got error somewhere its alrady send)
+		b.SetResponseResult("Done")
+	}
+	b.enc = nil
+	return nil
+}
+func (b *StreamingResponse) commit() {
+	if b.buffer.Len() <= 0 {
+		return
+	}
+	var resp struct {
+		Data interface{} `json:"data"`
+	}
+	resp.Data = b.buffer.Bytes()
+	b.enc.Encode(resp)
+	b.buffer.Reset()
+}
+func (b *StreamingResponse) SetID(id interface{}) {
+	b.id = id
+}
+
+func (b *StreamingResponse) Write(p []byte) (int, error) {
+	if b.enc == nil {
+		log.Warn("Write disabled on closed response")
+		return 0, io.EOF
+	}
+	var resp struct {
+		Data interface{} `json:"data"`
+	}
+	if b.chunkSize <= 0 {
+		result := bytes.SplitAfter(p, []byte("\n"))
+		for _, v := range result {
+			if v[len(v)-1] == '\n' {
+				// special case with dangling data in buffer
+				if b.buffer.Len() != 0 {
+					b.buffer.Write(v)
+					// assign buffer bytes as source
+					v = b.buffer.Bytes()
+				}
+				resp.Data = string(v[0 : len(v)-1])
+				b.enc.Encode(resp)
+			} else {
+				// Oh dang! We get some leftovers...
+				b.buffer.Write(v)
+			}
+		}
+		return len(p), nil
+	}
+	if len(p)+b.buffer.Len() >= b.chunkSize {
+		readTotal := 0
+		missingBytes := (b.chunkSize - b.buffer.Len()) % b.chunkSize
+		if missingBytes != b.chunkSize {
+			n, err := b.buffer.Write(p[0:missingBytes])
+			if err != nil {
+				return n, err
+			}
+			readTotal += n
+			b.commit()
+		}
+		chunk := missingBytes
+
+		for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
+			resp.Data = p[chunk : chunk+b.chunkSize]
+			readTotal += b.chunkSize
+			if err := b.enc.Encode(resp); err != nil {
+				return readTotal, err
+			}
+		}
+		lastN, err := b.buffer.Write(p[chunk:len(p)])
+		return readTotal + lastN, err
+	}
+
+	return b.buffer.Write(p)
+}
+
+func (b *StreamingResponse) SetResponseError(e error) {
+	if b.enc != nil {
+		b.commit()
+		b.enc.Encode(NewError(e, b.id))
+		b.Close()
+	} else {
+		log.Warn("Setting error more than once!")
+	}
+}
+
+func (b *StreamingResponse) SetResponseResult(r interface{}) {
+	if b.enc == nil {
+		log.Warn("Unable to set result on closed response")
+		return
+	}
+	b.commit()
+	b.enc.Encode(NewResult(r, b.id))
+}
+
+type LegacyStreamingResponse struct {
+	raw io.Writer
+}
+
+func (b *LegacyStreamingResponse) Close() error {
+	b.raw = nil
+	return nil
+}
+
+func (b *LegacyStreamingResponse) SetID(id interface{}) {
+	log.Debug("SetId unused for Legacy streaming")
+}
+
+func (b *LegacyStreamingResponse) Write(p []byte) (int, error) {
+	return b.raw.Write(p)
+}
+
+func (b *LegacyStreamingResponse) SetResponseError(e error) {
+	log.Debug("SetResponseError unused for Legacy streaming")
+}
+
+func (b *LegacyStreamingResponse) SetResponseResult(result interface{}) {
+	switch converted := result.(type) {
+	case string, int, int16, int32, int64, int8:
+		io.WriteString(b, fmt.Sprintf("%v", converted))
+	default:
+		log.Crit("Unknown input result", "result", result)
+	}
+	// And thats it
+	b.raw = nil
+}
+
+func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx interface{}, metype MethodType) error {
+	var rpcResponser RpcResponser
 	kontext := context.Background()
-	if metype == RpcMethod && p.Limits.ExecTimeout > 0 {
+	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
+
+	if p.Limits.ExecTimeout > 0 {
 		ctx, cancel := context.WithTimeout(kontext, p.Limits.ExecTimeout)
 		defer cancel()
 		kontext = ctx
 	}
 
-	var result interface{}
-	var err error
+	switch metype {
+	case RPCMethod:
+		rpcResponser = NewRpcResponse(response)
+	case StreamingMethodLegacy:
+		rpcResponser = &LegacyStreamingResponse{raw: response}
+	case StreamingMethod:
+		rpcResponser = &StreamingResponse{raw: response}
+	default:
+		log.Crit("Unknown method type", "type", metype)
+		panic("Unexpected method type")
+	}
+
+	defer rpcResponser.Close()
+
 	done := make(chan struct{})
+	var err error
 	go func() {
-		result, err = m.Invoke2(request, ctx)
-		close(done)
+		defer close(done)
+		// TODO: In case of interrupt we end processing
+		err = p.processWrapper(data, rpcResponser, kontext, metype)
 	}()
 
 	select {
 	case <-done:
-		log.Debug("Done")
 	case <-kontext.Done():
-		log.Debug("timeout", "err", kontext.Err())
-		return NewError(errors.New("Timeout"), request.ID)
+		rpcResponser.SetResponseError(TimeoutError)
+		err = TimeoutError
 	}
-	// TIMEOUT HANDLING END
 
-	// Rpc method could return reader and inside use routine to provide endless stream of data
-	// to prevent this we are using same exec context and previously set timeout
-	switch result := result.(type) {
-	case io.Reader:
-		var resultOut *JsonRpcResponse
-		done = make(chan struct{})
-		go func() {
-			defer close(done)
-
-			// Legacy streaming is dumb, just copy bytes from source to targes
-			switch metype {
-			case StreamingMethodLegacy:
-				io.Copy(response, result)
-				resultOut = nil
-			case StreamingMethod:
-				log.Crit("UNIMPLEMENTED")
-				resultOut = NewResult("OK", request.ID)
-			case RpcMethod:
-				buffer := bytes.NewBuffer(nil)
-				io.Copy(buffer, result)
-				resultOut = NewResult(buffer.String(), request.ID)
-			default:
-				log.Crit("Should never happen")
-				resultOut = nil
-				panic("AAA")
-			}
-		}()
-		select {
-		case <-done:
-			return resultOut
-		case <-kontext.Done():
-			return NewError(errors.New("Timeout"), request.ID)
-		}
-	default:
-		return NewResult(result, request.ID)
-	}
-}
-
-func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, context interface{}, metype MethodType) error {
-	rponse := p.processWrapper(data, response, context, metype)
-	if rponse != nil {
-		if rponse.ID == nil {
-			return nil
-		}
-
-		if metype == RpcMethod || metype == StreamingMethod {
-			encoder := json.NewEncoder(response)
-			return encoder.Encode(rponse)
-		}
-		if rponse.Error == nil {
-			switch result := rponse.Result.(type) {
-			case string:
-				_, err := response.Write([]byte(result))
-				return err
-			default:
-				log.Crit("WTH")
-				panic("AAA")
-			}
-		} else {
-			return nil
-		}
-	}
-	return nil
+	return err
 }

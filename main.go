@@ -1,12 +1,10 @@
 package main
 
 import (
-	"./rupicolarpc"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	log "github.com/inconshreveable/log15"
-	"github.com/spf13/pflag"
 	"io"
 	"net"
 	"net/http"
@@ -14,35 +12,39 @@ import (
 	"os/exec"
 	"strconv"
 	"time"
+
+	"./rupicolarpc"
+	log "github.com/inconshreveable/log15"
+	"github.com/spf13/pflag"
 )
 
 var (
-	RpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
+	rpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
 )
 
 const commandBufferSize int32 = 1024
 
-type CmdEx *exec.Cmd
+type cmdEx *exec.Cmd
 
-type rupicolaRpcContext struct {
+type rupicolaRPCContext struct {
 	isAuthorized      bool
 	allowPrivate      bool
 	shouldRequestAuth bool
 	isRPC             bool
-	parent            *RupicolaProcessor
+	parent            *rupicolaProcessor
 }
 
-type RupicolaProcessor struct {
+type rupicolaProcessor struct {
 	limits    Limits
 	processor *rupicolarpc.JsonRpcProcessor
 	config    *RupicolaConfig
 }
-type RupicolaProcessorChild struct {
-	parent *RupicolaProcessor
+type rupicolaProcessorChild struct {
+	parent *rupicolaProcessor
 	bind   *Bind
 }
 
-func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
 	// Accept only POST
 	if r.Method != "POST" {
@@ -60,7 +62,7 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	var rpcOperationMode rupicolarpc.MethodType
 
-	var context rupicolaRpcContext
+	var context rupicolaRPCContext
 	context.parent = s.parent
 	if r.RequestURI == s.parent.config.Protocol.Uri.Rpc {
 		context.isRPC = true
@@ -89,7 +91,7 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	// Don't like this hack... we should not use this outside framework...
 	if !context.isAuthorized && !context.allowPrivate {
-		err := json.NewEncoder(w).Encode(rupicolarpc.NewError(RpcUnauthorizedError, nil))
+		err := json.NewEncoder(w).Encode(rupicolarpc.NewError(rpcUnauthorizedError, nil))
 		if err != nil {
 			log.Crit("unknown error", "err", err)
 			panic(err)
@@ -99,13 +101,18 @@ func (s *RupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context interface{}) (*rupicolaRpcContext, *exec.Cmd, error) {
-	castedContext, ok := context.(*rupicolaRpcContext)
+func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
+	uncastedContext := ctx.Value(rupicolarpc.RupicalaContextKeyContext)
+	var ok bool
+	var castedContext *rupicolaRPCContext
+	if uncastedContext != nil {
+		castedContext, ok = uncastedContext.(*rupicolaRPCContext)
+	}
 	if ok {
 		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
 			castedContext.shouldRequestAuth = true
 			log.Warn("Unauthorized")
-			return nil, nil, RpcUnauthorizedError
+			return nil, nil, rpcUnauthorizedError
 		}
 	} else {
 		log.Crit("Provided context is not pointer")
@@ -148,9 +155,10 @@ func (m *MethodDef) prepareCommand(req rupicolarpc.JsonRpcRequest, context inter
 	return castedContext, process, nil
 }
 
-// Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke2(req rupicolarpc.JsonRpcRequest, context interface{}) (interface{}, error) {
-	r, process, err := m.prepareCommand(req, context)
+// Invoke2 is implementation of jsonrpc.Invoker
+func (m *MethodDef) Invoke2(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
+	// We can cancel or set deadline for current context (only shorter - default no limit)
+	r, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -166,16 +174,17 @@ func (m *MethodDef) Invoke2(req rupicolarpc.JsonRpcRequest, context interface{})
 
 	pr, pw := io.Pipe()
 	writer := io.Writer(pw)
-
-	if r.parent.limits.MaxResponse > 0 {
-		writer = rupicolarpc.LimitWrite(writer, int64(r.parent.limits.MaxResponse))
-	}
+	reader := io.Reader(pr)
 
 	if m.Encoding == Base64 {
 		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder
+	}
+
+	if r.parent.limits.MaxResponse > 0 {
+		reader = rupicolarpc.ExceptionalLimitRead(reader, int64(r.parent.limits.MaxResponse))
 	}
 
 	go func() {
@@ -207,6 +216,13 @@ func (m *MethodDef) Invoke2(req rupicolarpc.JsonRpcRequest, context interface{})
 				pw.CloseWithError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "write"))
 				break
 			}
+			
+			select {
+			case <-ctx.Done():
+				pw.CloseWithError(rupicolarpc.TimeoutError)
+				break
+			default:
+			}
 		}
 	}()
 	// TODO: Check thys
@@ -215,7 +231,7 @@ func (m *MethodDef) Invoke2(req rupicolarpc.JsonRpcRequest, context interface{})
 		// for "delayed" execution we cannot provide meaningful data
 		return "OK", nil
 	}
-	return pr, nil
+	return reader, nil
 }
 
 func main() {
@@ -239,7 +255,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	rupicolaProcessor := RupicolaProcessor{config: configuration, limits: configuration.Limits, processor: rupicolarpc.NewJsonRpcProcessor()}
+	rupicolaProcessor := rupicolaProcessor{config: configuration, limits: configuration.Limits, processor: rupicolarpc.NewJsonRpcProcessor()}
 
 	for k, v := range configuration.Methods {
 		var metype rupicolarpc.MethodType
@@ -255,7 +271,7 @@ func main() {
 	for _, bind := range configuration.Protocol.Bind {
 		// create local variable bind
 		bind := bind
-		child := RupicolaProcessorChild{&rupicolaProcessor, bind}
+		child := rupicolaProcessorChild{&rupicolaProcessor, bind}
 		mux := http.NewServeMux()
 		mux.Handle(configuration.Protocol.Uri.Rpc, &child)
 		mux.Handle(configuration.Protocol.Uri.Streamed, &child)
