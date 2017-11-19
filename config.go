@@ -29,7 +29,7 @@ type Limits struct {
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
-	Include  []IncludeConfig
+	Include  []includeConfig
 	Protocol Protocol
 	Limits   Limits
 	Log      struct {
@@ -46,8 +46,8 @@ type MethodParam struct {
 
 // RunAs ...
 type RunAs struct {
-	Uid *uint32
-	Gid *uint32
+	UID *uint32
+	GID *uint32
 }
 
 // MethodDef ...
@@ -59,7 +59,7 @@ type MethodDef struct {
 	InvokeInfo struct {
 		Exec  string
 		Delay time.Duration
-		Args  []MethodArgs
+		Args  []methodArgs
 		RunAs RunAs `yaml:",omitempty"`
 	} `yaml:"invoke"`
 	logger log.Logger
@@ -75,34 +75,45 @@ type MethodEncoding int
 type BindType int
 
 const (
-	Utf8   MethodEncoding = 0
-	Base64                = 1
+	// Utf8 - Default message encoding
+	Utf8 MethodEncoding = 0
+	// Base64 - Encode message as base64
+	Base64 = 1
+	// Base85 - Encode message as base85
+	Base85 = 2
 )
 const (
+	// String - Method parameter should be string
 	String MethodParamType = 0
-	Int                    = 1
-	Bool                   = 2
+	// Int - Method parameter should be int
+	Int = 1
+	// Bool - Method parameter should be bool
+	Bool = 2
 )
 
-type MethodArgs struct {
+type methodArgs struct {
 	Param    string
 	Skip     bool
 	Static   bool
 	compound bool
-	Child    []MethodArgs
+	Child    []methodArgs
 }
 
-type IncludeConfig struct {
+type includeConfig struct {
 	Required bool
 	Name     string
 }
 
 const (
-	Http  BindType = 0
-	Https          = 1
-	Unix           = 2
+	// HTTP - HTTP transport over TCP
+	HTTP BindType = 0
+	// HTTPS - HTTPS transport over TCP
+	HTTPS = 1
+	// Unix - HTTP transport over unix socket
+	Unix = 2
 )
 
+// Bind - describe listening address binding
 type Bind struct {
 	Type         BindType
 	Address      string
@@ -115,6 +126,8 @@ type Bind struct {
 	// Only for Unix [default=660]
 	Mode uint32
 }
+
+// Protocol - define bind points, auth and URI paths
 type Protocol struct {
 	Bind []*Bind
 
@@ -123,14 +136,14 @@ type Protocol struct {
 		Password string
 	} `yaml:"auth-basic"`
 
-	Uri struct {
+	URI struct {
 		Streamed string
-		Rpc      string
+		RPC      string
 	}
 }
 
 // UnmarshalYAML ignore
-func (w *IncludeConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (w *includeConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var mapType map[string]bool
 	var stringType string
 
@@ -161,9 +174,9 @@ func (w *BindType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 	switch strings.ToLower(bindType) {
 	case "http":
-		*w = Http
+		*w = HTTP
 	case "https":
-		*w = Https
+		*w = HTTPS
 	case "unix":
 		*w = Unix
 	default:
@@ -216,36 +229,35 @@ func (w *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error
 }
 
 // UnmarshalYAML ignore
-func (w *MethodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
+func (m *methodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var plainText string
 	var structure struct {
 		Param string
 		// Check what was it
 		Skip bool
 	}
-	var array []MethodArgs
+	var array []methodArgs
 
 	if unmarshal(&plainText) == nil {
-		w.Param = plainText
-		w.Static = true
-		w.Skip = false
+		m.Param = plainText
+		m.Static = true
+		m.Skip = false
 		return nil
 	}
 	var err error
 	if err = unmarshal(&structure); err == nil {
-		w.Param = structure.Param
-		w.Skip = structure.Skip
-		w.Static = false
+		m.Param = structure.Param
+		m.Skip = structure.Skip
+		m.Static = false
 		return nil
 	}
 	if err = unmarshal(&array); err == nil {
-		w.Child = array
-		w.compound = true
+		m.Child = array
+		m.compound = true
 		return nil
 	}
 	log.Crit("err", "err", err)
 	panic(err)
-	return nil
 }
 
 func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
@@ -258,7 +270,7 @@ func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
 	return true
 }
 
-func (conf *RupicolaConfig) includesFromConf(info IncludeConfig) error {
+func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
 	fileInfo, err := os.Stat(info.Name)
 
 	if os.IsNotExist(err) {
@@ -275,7 +287,7 @@ func (conf *RupicolaConfig) includesFromConf(info IncludeConfig) error {
 				if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
 					// first field doesn't matter - we are including files from directory so
 					// they should exists
-					if err := conf.includesFromConf(IncludeConfig{true, filepath.Join(info.Name, finfo.Name())}); err != nil {
+					if err := conf.includesFromConf(includeConfig{true, filepath.Join(info.Name, finfo.Name())}); err != nil {
 						return err
 					}
 				}
@@ -300,11 +312,11 @@ func (conf *RupicolaConfig) includesFromConf(info IncludeConfig) error {
 
 		conf.Protocol.Bind = append(conf.Protocol.Bind, konfig.Protocol.Bind...)
 
-		if konfig.Protocol.Uri.Rpc != "" {
-			conf.Protocol.Uri.Rpc = konfig.Protocol.Uri.Rpc
+		if konfig.Protocol.URI.RPC != "" {
+			conf.Protocol.URI.RPC = konfig.Protocol.URI.RPC
 		}
-		if konfig.Protocol.Uri.Streamed != "" {
-			conf.Protocol.Uri.Streamed = konfig.Protocol.Uri.Streamed
+		if konfig.Protocol.URI.Streamed != "" {
+			conf.Protocol.URI.Streamed = konfig.Protocol.URI.Streamed
 		}
 
 		// If anything is change in AuthBasic - replace current definition
@@ -315,7 +327,7 @@ func (conf *RupicolaConfig) includesFromConf(info IncludeConfig) error {
 	return nil
 }
 
-func aggregateArgs(a MethodArgs, b map[string]bool) {
+func aggregateArgs(a methodArgs, b map[string]bool) {
 	if !a.Static && !a.compound && a.Param != "self" {
 		b[a.Param] = true
 	}
@@ -365,14 +377,16 @@ func (conf *RupicolaConfig) readConfig(configFilePath string, recursive bool) er
 	return err
 }
 
+// NewConfig - create configuration with default values
 func NewConfig() *RupicolaConfig {
 	var cfg RupicolaConfig
-	cfg.Protocol.Uri.Rpc = "/rpc"
-	cfg.Protocol.Uri.Streamed = "/streaming"
+	cfg.Protocol.URI.RPC = "/rpc"
+	cfg.Protocol.URI.Streamed = "/streaming"
 	cfg.Limits = Limits{10000, 0, 5242880, 5242880}
 	return &cfg
 }
 
+// ParseConfig from file
 func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
 	cfg := NewConfig()
 	err := cfg.readConfig(configFilePath, true)
@@ -388,14 +402,15 @@ func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
 		}
 
 		// If Gid or Uid is empty assign it from current process
-		if v.InvokeInfo.RunAs.Gid == nil {
+		// We cant use 0 as empty (this is root on unix, and someone could set it)
+		if v.InvokeInfo.RunAs.GID == nil {
 			tmp := uint32(os.Getgid())
-			v.InvokeInfo.RunAs.Gid = &tmp
+			v.InvokeInfo.RunAs.GID = &tmp
 		}
 
-		if v.InvokeInfo.RunAs.Uid == nil {
+		if v.InvokeInfo.RunAs.UID == nil {
 			tmp := uint32(os.Getuid())
-			v.InvokeInfo.RunAs.Uid = &tmp
+			v.InvokeInfo.RunAs.UID = &tmp
 		}
 
 		v.InvokeInfo.Delay *= time.Second
@@ -432,19 +447,20 @@ func (m *MethodDef) CheckParams(req *rupicolarpc.JsonRpcRequest) error {
 	}
 	return nil
 }
-func (arg *MethodArgs) _evalueateArgs(arguments map[string]interface{}, output *bytes.Buffer) (bool, error) {
-	if arg.Static {
-		_, e := output.WriteString(arg.Param)
+
+func (m *methodArgs) evalueateArgs(arguments map[string]interface{}, output *bytes.Buffer) (bool, error) {
+	if m.Static {
+		_, e := output.WriteString(m.Param)
 		if e != nil {
 			return false, e
 		}
 	} else {
 		var value string
-		valueRaw, has := arguments[arg.Param]
+		valueRaw, has := arguments[m.Param]
 		// Convert value to string
 		value = fmt.Sprint(valueRaw)
 
-		if arg.Param == "self" {
+		if m.Param == "self" {
 			has = true
 			if arguments == nil {
 				value = ""
@@ -457,16 +473,16 @@ func (arg *MethodArgs) _evalueateArgs(arguments map[string]interface{}, output *
 				}
 			}
 		}
-		if has || arg.compound {
+		if has || m.compound {
 			// We should skip expanding for markers only
-			if !arg.Skip {
+			if !m.Skip {
 				output.WriteString(value)
 			}
 			var skipCompound bool
-			for _, arg := range arg.Child {
+			for _, arg := range m.Child {
 				var skip bool
 				var err error
-				if skip, err = arg._evalueateArgs(arguments, output); err != nil {
+				if skip, err = arg.evalueateArgs(arguments, output); err != nil {
 					return skip, err
 				}
 				skipCompound = skipCompound || skip
@@ -476,7 +492,7 @@ func (arg *MethodArgs) _evalueateArgs(arguments map[string]interface{}, output *
 
 		// All arguments in param are filtered
 		// so we are sure that we don't have "wild" param in args
-		return arg.Skip, nil
+		return m.Skip, nil
 	}
 
 	return false, nil

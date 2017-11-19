@@ -64,10 +64,10 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	var context rupicolaRPCContext
 	context.parent = s.parent
-	if r.RequestURI == s.parent.config.Protocol.Uri.Rpc {
+	if r.RequestURI == s.parent.config.Protocol.URI.RPC {
 		context.isRPC = true
 		rpcOperationMode = rupicolarpc.RPCMethod
-	} else if r.RequestURI == s.parent.config.Protocol.Uri.Streamed {
+	} else if r.RequestURI == s.parent.config.Protocol.URI.Streamed {
 		context.isRPC = false
 		streamingVersion := r.Header.Get("RupicolaStreamingVersion")
 		switch streamingVersion {
@@ -116,7 +116,6 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		}
 	} else {
 		log.Crit("Provided context is not pointer")
-		panic("Provided context is not pointer")
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
 	}
 
@@ -127,7 +126,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg._evalueateArgs(req.Params, buffer)
+		skip, err := arg.evalueateArgs(req.Params, buffer)
 		if err != nil {
 			log.Error("error", "err", err)
 			return nil, nil, err
@@ -155,7 +154,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	return castedContext, process, nil
 }
 
-// Invoke2 is implementation of jsonrpc.Invoker
+// Invoke is implementation of jsonrpc.Invoker
 func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	r, process, err := m.prepareCommand(ctx, req)
@@ -273,8 +272,8 @@ func main() {
 		bind := bind
 		child := rupicolaProcessorChild{&rupicolaProcessor, bind}
 		mux := http.NewServeMux()
-		mux.Handle(configuration.Protocol.Uri.Rpc, &child)
-		mux.Handle(configuration.Protocol.Uri.Streamed, &child)
+		mux.Handle(configuration.Protocol.URI.RPC, &child)
+		mux.Handle(configuration.Protocol.URI.Streamed, &child)
 
 		srv := &http.Server{Addr: bind.Address + ":" + strconv.Itoa(int(bind.Port)), Handler: mux}
 
@@ -284,11 +283,11 @@ func main() {
 
 		go func() {
 			switch bind.Type {
-			case Http:
+			case HTTP:
 				log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
 				failureChannel <- srv.ListenAndServe()
 
-			case Https:
+			case HTTPS:
 				log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
 				failureChannel <- srv.ListenAndServeTLS(bind.Cert, bind.Key)
 
