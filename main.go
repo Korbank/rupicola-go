@@ -66,7 +66,7 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	context.parent = s.parent
 	if r.RequestURI == s.parent.config.Protocol.Uri.Rpc {
 		context.isRPC = true
-		rpcOperationMode = rupicolarpc.RpcMethod
+		rpcOperationMode = rupicolarpc.RPCMethod
 	} else if r.RequestURI == s.parent.config.Protocol.Uri.Streamed {
 		context.isRPC = false
 		streamingVersion := r.Header.Get("RupicolaStreamingVersion")
@@ -156,7 +156,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 }
 
 // Invoke2 is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke2(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
+func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	r, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
@@ -216,7 +216,7 @@ func (m *MethodDef) Invoke2(ctx context.Context, req rupicolarpc.JsonRpcRequest)
 				pw.CloseWithError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "write"))
 				break
 			}
-			
+
 			select {
 			case <-ctx.Done():
 				pw.CloseWithError(rupicolarpc.TimeoutError)
@@ -235,7 +235,7 @@ func (m *MethodDef) Invoke2(ctx context.Context, req rupicolarpc.JsonRpcRequest)
 }
 
 func main() {
-	configPath := pflag.String("config", `D:\Programowanie\rupicola-ng\sample.conf`, "Specify directory or config file")
+	configPath := pflag.String("config", "", "Specify directory or config file")
 	pflag.Parse()
 	if *configPath == "" {
 		pflag.Usage()
@@ -243,7 +243,7 @@ func main() {
 	}
 	configuration, err := ParseConfig(*configPath)
 	if err != nil {
-		log.Crit("err", err)
+		log.Crit("Unable to parse config", "err", err)
 		os.Exit(1)
 	}
 	if len(configuration.Methods) == 0 {
@@ -262,7 +262,7 @@ func main() {
 		if v.Streamed {
 			metype = rupicolarpc.StreamingMethodLegacy
 		} else {
-			metype = rupicolarpc.RpcMethod
+			metype = rupicolarpc.RPCMethod
 		}
 		rupicolaProcessor.processor.AddMethod(k, metype, v)
 	}

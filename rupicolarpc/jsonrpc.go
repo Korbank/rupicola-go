@@ -180,10 +180,6 @@ func NewStandardError(code StandardErrorType) error {
 	return NewStandardErrorData(code, nil)
 }
 
-func _New_Error(code int, desc string) error {
-	return &_Error{nil, code, desc, nil}
-}
-
 func (e *_Error) Error() string {
 	if e.internal != nil {
 		return e.internal.Error()
@@ -236,14 +232,14 @@ func (w *LimitedWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-type Limits struct {
+type limits struct {
 	ReadTimeout time.Duration
 	ExecTimeout time.Duration
 	MaxResponse uint32
 }
 type JsonRpcProcessor struct {
 	methods map[string]map[MethodType]Invoker
-	Limits  Limits
+	Limits  limits
 }
 
 func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) {
@@ -262,7 +258,7 @@ func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method 
 func NewJsonRpcProcessor() *JsonRpcProcessor {
 	return &JsonRpcProcessor{
 		make(map[string]map[MethodType]Invoker),
-		Limits{10 * time.Second, 0, 5242880},
+		limits{10 * time.Second, 0, 5242880},
 	}
 
 }
@@ -274,7 +270,7 @@ func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
 	return request, err
 }
 
-func (p *JsonRpcProcessor) processWrapper(data io.Reader, response RpcResponser, ctx context.Context, metype MethodType) error {
+func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, response rpcResponser, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
 
@@ -326,23 +322,23 @@ func (p *JsonRpcProcessor) processWrapper(data io.Reader, response RpcResponser,
 	}
 }
 
-type RpcResponse struct {
+type rpcResponse struct {
 	dst       *json.Encoder
 	raw       io.Writer
 	id        interface{}
 	writeUsed bool
 	buffer    *bytes.Buffer
 }
-type RpcResponser interface {
+type rpcResponser interface {
 	io.WriteCloser
 	SetID(interface{})
 	SetResponseResult(interface{})
 	SetResponseError(error)
 }
 
-func NewRpcResponse(w io.Writer) RpcResponser {
+func newRPCResponse(w io.Writer) rpcResponser {
 	buffer := bytes.NewBuffer(nil)
-	return &RpcResponse{
+	return &rpcResponse{
 		dst:       json.NewEncoder(buffer),
 		raw:       w,
 		writeUsed: false,
@@ -350,7 +346,7 @@ func NewRpcResponse(w io.Writer) RpcResponser {
 	}
 }
 
-func (b *RpcResponse) Close() error {
+func (b *rpcResponse) Close() error {
 	if b.buffer != nil {
 		if b.writeUsed {
 			b.SetResponseResult(b.buffer.String())
@@ -364,13 +360,13 @@ func (b *RpcResponse) Close() error {
 	return nil
 }
 
-func (b *RpcResponse) SetID(id interface{}) {
+func (b *rpcResponse) SetID(id interface{}) {
 	if b.id != nil {
 		log.Warn("SetID invoked twice")
 	}
 	b.id = id
 }
-func (b *RpcResponse) Write(p []byte) (int, error) {
+func (b *rpcResponse) Write(p []byte) (int, error) {
 	if b.buffer != nil {
 		b.writeUsed = true
 		return b.buffer.Write(p)
@@ -378,19 +374,19 @@ func (b *RpcResponse) Write(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
 
-func (b *RpcResponse) SetResponseError(e error) {
+func (b *rpcResponse) SetResponseError(e error) {
 	b.writeUsed = false
 	b.buffer.Reset()
 	b.dst.Encode(NewError(e, b.id))
 }
 
-func (b *RpcResponse) SetResponseResult(result interface{}) {
+func (b *rpcResponse) SetResponseResult(result interface{}) {
 	b.writeUsed = false
 	b.buffer.Reset()
 	b.dst.Encode(NewResult(result, b.id))
 }
 
-type StreamingResponse struct {
+type streamingResponse struct {
 	raw       io.Writer
 	buffer    *bytes.Buffer
 	enc       *json.Encoder
@@ -398,8 +394,8 @@ type StreamingResponse struct {
 	chunkSize int
 }
 
-func newStreamingResponse(writer io.Writer, n int) *StreamingResponse {
-	return &StreamingResponse{
+func newStreamingResponse(writer io.Writer, n int) rpcResponser {
+	return &streamingResponse{
 		raw:       writer,
 		buffer:    bytes.NewBuffer(make([]byte, 0, 128)),
 		enc:       json.NewEncoder(writer),
@@ -407,7 +403,7 @@ func newStreamingResponse(writer io.Writer, n int) *StreamingResponse {
 	}
 }
 
-func (b *StreamingResponse) Close() error {
+func (b *streamingResponse) Close() error {
 	b.commit()
 	if b.enc != nil {
 		// Write footer (if we got error somewhere its alrady send)
@@ -416,7 +412,7 @@ func (b *StreamingResponse) Close() error {
 	b.enc = nil
 	return nil
 }
-func (b *StreamingResponse) commit() {
+func (b *streamingResponse) commit() {
 	if b.buffer.Len() <= 0 {
 		return
 	}
@@ -427,11 +423,11 @@ func (b *StreamingResponse) commit() {
 	b.enc.Encode(resp)
 	b.buffer.Reset()
 }
-func (b *StreamingResponse) SetID(id interface{}) {
+func (b *streamingResponse) SetID(id interface{}) {
 	b.id = id
 }
 
-func (b *StreamingResponse) Write(p []byte) (int, error) {
+func (b *streamingResponse) Write(p []byte) (int, error) {
 	if b.enc == nil {
 		log.Warn("Write disabled on closed response")
 		return 0, io.EOF
@@ -485,7 +481,7 @@ func (b *StreamingResponse) Write(p []byte) (int, error) {
 	return b.buffer.Write(p)
 }
 
-func (b *StreamingResponse) SetResponseError(e error) {
+func (b *streamingResponse) SetResponseError(e error) {
 	if b.enc != nil {
 		b.commit()
 		b.enc.Encode(NewError(e, b.id))
@@ -495,7 +491,7 @@ func (b *StreamingResponse) SetResponseError(e error) {
 	}
 }
 
-func (b *StreamingResponse) SetResponseResult(r interface{}) {
+func (b *streamingResponse) SetResponseResult(r interface{}) {
 	if b.enc == nil {
 		log.Warn("Unable to set result on closed response")
 		return
@@ -504,28 +500,28 @@ func (b *StreamingResponse) SetResponseResult(r interface{}) {
 	b.enc.Encode(NewResult(r, b.id))
 }
 
-type LegacyStreamingResponse struct {
+type legacyStreamingResponse struct {
 	raw io.Writer
 }
 
-func (b *LegacyStreamingResponse) Close() error {
+func (b *legacyStreamingResponse) Close() error {
 	b.raw = nil
 	return nil
 }
 
-func (b *LegacyStreamingResponse) SetID(id interface{}) {
+func (b *legacyStreamingResponse) SetID(id interface{}) {
 	log.Debug("SetId unused for Legacy streaming")
 }
 
-func (b *LegacyStreamingResponse) Write(p []byte) (int, error) {
+func (b *legacyStreamingResponse) Write(p []byte) (int, error) {
 	return b.raw.Write(p)
 }
 
-func (b *LegacyStreamingResponse) SetResponseError(e error) {
+func (b *legacyStreamingResponse) SetResponseError(e error) {
 	log.Debug("SetResponseError unused for Legacy streaming")
 }
 
-func (b *LegacyStreamingResponse) SetResponseResult(result interface{}) {
+func (b *legacyStreamingResponse) SetResponseResult(result interface{}) {
 	switch converted := result.(type) {
 	case string, int, int16, int32, int64, int8:
 		io.WriteString(b, fmt.Sprintf("%v", converted))
@@ -536,8 +532,9 @@ func (b *LegacyStreamingResponse) SetResponseResult(result interface{}) {
 	b.raw = nil
 }
 
+// Process : Parse and process request from data
 func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx interface{}, metype MethodType) error {
-	var rpcResponser RpcResponser
+	var rpcResponser rpcResponser
 	kontext := context.Background()
 	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
 
@@ -549,11 +546,11 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx inter
 
 	switch metype {
 	case RPCMethod:
-		rpcResponser = NewRpcResponse(response)
+		rpcResponser = newRPCResponse(response)
 	case StreamingMethodLegacy:
-		rpcResponser = &LegacyStreamingResponse{raw: response}
+		rpcResponser = &legacyStreamingResponse{raw: response}
 	case StreamingMethod:
-		rpcResponser = &StreamingResponse{raw: response}
+		rpcResponser = newStreamingResponse(response, 0)
 	default:
 		log.Crit("Unknown method type", "type", metype)
 		panic("Unexpected method type")
@@ -566,7 +563,7 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx inter
 	go func() {
 		defer close(done)
 		// TODO: In case of interrupt we end processing
-		err = p.processWrapper(data, rpcResponser, kontext, metype)
+		err = p.processWrapper(kontext, data, rpcResponser, metype)
 	}()
 
 	select {
