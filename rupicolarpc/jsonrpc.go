@@ -4,9 +4,8 @@ import log "github.com/inconshreveable/log15"
 import "encoding/json"
 import "io"
 
-import "fmt"
 import "strconv"
-import "bytes"
+
 import "time"
 import "context"
 
@@ -68,7 +67,7 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 		unified = make(map[string]interface{}, len(converted))
 		for i, v := range converted {
 			// Count arguments from 1 to N
-			unified[strconv.Itoa(i+1)] = fmt.Sprint(v)
+			unified[strconv.Itoa(i+1)] = v //fmt.Sprint(v)
 		}
 
 	default:
@@ -116,33 +115,44 @@ type _Error struct {
 	Data     interface{} `json:"data,omitempty"`
 }
 
-/*code 	message 	meaning
--32700 	Parse error 	Invalid JSON was received by the server.
-An error occurred on the server while parsing the JSON text.
--32600 	Invalid Request 	The JSON sent is not a valid Request object.
--32601 	Method not found 	The method does not exist / is not available.
--32602 	Invalid params 	Invalid method parameter(s).
--32603 	Internal error 	Internal JSON-RPC error.
--32000 to -32099 	Server error 	Reserved for implementation-defined server-errors.*/
+/*StandardErrorType error code
+*code 	message 	meaning
+*-32700 	Parse error 	Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
+*-32600 	Invalid Request 	The JSON sent is not a valid Request object.
+*-32601 	Method not found 	The method does not exist / is not available.
+*-32602 	Invalid params 	Invalid method parameter(s).
+*-32603 	Internal error 	Internal JSON-RPC error.
+*-32000 to -32099 	Server error 	Reserved for implementation-defined server-errors.
+ */
 type StandardErrorType int
 
 const (
-	ParseError        StandardErrorType = -32700
-	InvalidRequest                      = -32600
-	MethodNotFound                      = -32601
-	InvalidParams                       = -32602
-	InternalError                       = -32603
-	_ServerErrorStart                   = -32000
-	_ServerErrorEnd                     = -32099
+	// ParseError code for parse error
+	ParseError StandardErrorType = -32700
+	// InvalidRequest code for invalid request
+	InvalidRequest = -32600
+	// MethodNotFound code for method not found
+	MethodNotFound = -32601
+	// InvalidParams code for invalid params
+	InvalidParams = -32602
+	// InternalError code for internal error
+	InternalError     = -32603
+	_ServerErrorStart = -32000
+	_ServerErrorEnd   = -32099
 )
 
 var (
-	ParseErrorError     = NewStandardError(ParseError)
+	// ParseErrorError - Provided data is not JSON
+	ParseErrorError = NewStandardError(ParseError)
+	// MethodNotFoundError - no such method
 	MethodNotFoundError = NewStandardError(MethodNotFound)
+	// InvalidRequestError - Request was invalid
 	InvalidRequestError = NewStandardError(InvalidRequest)
-	TimeoutError        = NewServerError(-32099, "Timeout")
+	// TimeoutError - Timeout during request processing
+	TimeoutError = NewServerError(-32099, "Timeout")
 )
 
+// NewServerError from code and message
 func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
 		log.Crit("Invalid code", "code", code)
@@ -154,6 +164,7 @@ func NewServerError(code int, message string) error {
 	return &theError
 }
 
+// NewStandardErrorData with code and custom data
 func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	var theError _Error
 	theError.Code = int(code)
@@ -176,6 +187,7 @@ func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	return &theError
 }
 
+// NewStandardError from code
 func NewStandardError(code StandardErrorType) error {
 	return NewStandardErrorData(code, nil)
 }
@@ -194,15 +206,18 @@ func (m methodFunc) Invoke(ctx context.Context, in JsonRpcRequest) (interface{},
 	return m(in, ctx)
 }
 
+// ExceptionalLimitedReader returns ErrUnexpectedEOF after reaching limit
 type ExceptionalLimitedReader struct {
 	R io.Reader
 	N int64
 }
 
+// ExceptionalLimitRead construct from reader
 func ExceptionalLimitRead(r io.Reader, n int64) io.Reader {
 	return &ExceptionalLimitedReader{r, n}
 }
 
+// Read implement io.Read
 func (r *ExceptionalLimitedReader) Read(p []byte) (n int, err error) {
 	if r.N <= 0 || int64(len(p)) > r.N {
 		return 0, io.ErrUnexpectedEOF
@@ -213,27 +228,7 @@ func (r *ExceptionalLimitedReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-type LimitedWriter struct {
-	W io.Writer
-	N int64
-}
-
-func LimitWrite(w io.Writer, n int64) io.Writer {
-	return &LimitedWriter{w, n}
-}
-
-func (w *LimitedWriter) Write(p []byte) (n int, err error) {
-	if w.N <= 0 || int64(len(p)) > w.N {
-		return 0, io.ErrUnexpectedEOF
-	}
-
-	n, err = w.W.Write(p)
-	w.N -= int64(n)
-	return
-}
-
 type limits struct {
-	ReadTimeout time.Duration
 	ExecTimeout time.Duration
 	MaxResponse uint32
 }
@@ -242,6 +237,7 @@ type JsonRpcProcessor struct {
 	Limits  limits
 }
 
+// AddMethod add method
 func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) {
 	container, ok := p.methods[name]
 	if !ok {
@@ -251,23 +247,17 @@ func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invo
 	container[metype] = method
 }
 
+// AddMethodFunc add method as func
 func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method methodFunc) {
 	p.AddMethod(name, metype, method)
 }
 
+// NewJsonRpcProcessor create new json rpc processor
 func NewJsonRpcProcessor() *JsonRpcProcessor {
 	return &JsonRpcProcessor{
 		make(map[string]map[MethodType]Invoker),
-		limits{10 * time.Second, 0, 5242880},
+		limits{0, 5242880},
 	}
-
-}
-
-func ParseJsonRpcRequest(reader io.Reader) (JsonRpcRequest, error) {
-	jsonDecoder := json.NewDecoder(reader)
-	var request JsonRpcRequest
-	err := jsonDecoder.Decode(&request)
-	return request, err
 }
 
 func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, response rpcResponser, metype MethodType) error {
@@ -275,7 +265,14 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	var request JsonRpcRequest
 
 	if err := jsonDecoder.Decode(&request); err != nil {
-		response.SetResponseError(ParseErrorError)
+		nilInterface := interface{}(nil)
+		response.SetID(&nilInterface)
+		switch err.(type) {
+		case *json.SyntaxError:
+			response.SetResponseError(ParseErrorError)
+		default:
+			response.SetResponseError(InvalidRequestError)
+		}
 		return err
 	}
 	response.SetID(request.ID)
@@ -320,216 +317,6 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		response.SetResponseResult(result)
 		return nil
 	}
-}
-
-type rpcResponse struct {
-	dst       *json.Encoder
-	raw       io.Writer
-	id        interface{}
-	writeUsed bool
-	buffer    *bytes.Buffer
-}
-type rpcResponser interface {
-	io.WriteCloser
-	SetID(interface{})
-	SetResponseResult(interface{})
-	SetResponseError(error)
-}
-
-func newRPCResponse(w io.Writer) rpcResponser {
-	buffer := bytes.NewBuffer(nil)
-	return &rpcResponse{
-		dst:       json.NewEncoder(buffer),
-		raw:       w,
-		writeUsed: false,
-		buffer:    buffer,
-	}
-}
-
-func (b *rpcResponse) Close() error {
-	if b.buffer != nil {
-		if b.writeUsed {
-			b.SetResponseResult(b.buffer.String())
-		}
-		n, err := io.Copy(b.raw, b.buffer)
-		log.Debug("close RpcResponse", "n", n, "err", err)
-	}
-	b.buffer = nil
-	b.dst = nil
-	b.raw = nil
-	return nil
-}
-
-func (b *rpcResponse) SetID(id interface{}) {
-	if b.id != nil {
-		log.Warn("SetID invoked twice")
-	}
-	b.id = id
-}
-func (b *rpcResponse) Write(p []byte) (int, error) {
-	if b.buffer != nil {
-		b.writeUsed = true
-		return b.buffer.Write(p)
-	}
-	return 0, io.ErrUnexpectedEOF
-}
-
-func (b *rpcResponse) SetResponseError(e error) {
-	b.writeUsed = false
-	b.buffer.Reset()
-	b.dst.Encode(NewError(e, b.id))
-}
-
-func (b *rpcResponse) SetResponseResult(result interface{}) {
-	b.writeUsed = false
-	b.buffer.Reset()
-	b.dst.Encode(NewResult(result, b.id))
-}
-
-type streamingResponse struct {
-	raw       io.Writer
-	buffer    *bytes.Buffer
-	enc       *json.Encoder
-	id        interface{}
-	chunkSize int
-}
-
-func newStreamingResponse(writer io.Writer, n int) rpcResponser {
-	return &streamingResponse{
-		raw:       writer,
-		buffer:    bytes.NewBuffer(make([]byte, 0, 128)),
-		enc:       json.NewEncoder(writer),
-		chunkSize: n,
-	}
-}
-
-func (b *streamingResponse) Close() error {
-	b.commit()
-	if b.enc != nil {
-		// Write footer (if we got error somewhere its alrady send)
-		b.SetResponseResult("Done")
-	}
-	b.enc = nil
-	return nil
-}
-func (b *streamingResponse) commit() {
-	if b.buffer.Len() <= 0 {
-		return
-	}
-	var resp struct {
-		Data interface{} `json:"data"`
-	}
-	resp.Data = b.buffer.Bytes()
-	b.enc.Encode(resp)
-	b.buffer.Reset()
-}
-func (b *streamingResponse) SetID(id interface{}) {
-	b.id = id
-}
-
-func (b *streamingResponse) Write(p []byte) (int, error) {
-	if b.enc == nil {
-		log.Warn("Write disabled on closed response")
-		return 0, io.EOF
-	}
-	var resp struct {
-		Data interface{} `json:"data"`
-	}
-	if b.chunkSize <= 0 {
-		result := bytes.SplitAfter(p, []byte("\n"))
-		for _, v := range result {
-			if v[len(v)-1] == '\n' {
-				// special case with dangling data in buffer
-				if b.buffer.Len() != 0 {
-					b.buffer.Write(v)
-					// assign buffer bytes as source
-					v = b.buffer.Bytes()
-				}
-				resp.Data = string(v[0 : len(v)-1])
-				b.enc.Encode(resp)
-			} else {
-				// Oh dang! We get some leftovers...
-				b.buffer.Write(v)
-			}
-		}
-		return len(p), nil
-	}
-	if len(p)+b.buffer.Len() >= b.chunkSize {
-		readTotal := 0
-		missingBytes := (b.chunkSize - b.buffer.Len()) % b.chunkSize
-		if missingBytes != b.chunkSize {
-			n, err := b.buffer.Write(p[0:missingBytes])
-			if err != nil {
-				return n, err
-			}
-			readTotal += n
-			b.commit()
-		}
-		chunk := missingBytes
-
-		for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
-			resp.Data = p[chunk : chunk+b.chunkSize]
-			readTotal += b.chunkSize
-			if err := b.enc.Encode(resp); err != nil {
-				return readTotal, err
-			}
-		}
-		lastN, err := b.buffer.Write(p[chunk:len(p)])
-		return readTotal + lastN, err
-	}
-
-	return b.buffer.Write(p)
-}
-
-func (b *streamingResponse) SetResponseError(e error) {
-	if b.enc != nil {
-		b.commit()
-		b.enc.Encode(NewError(e, b.id))
-		b.Close()
-	} else {
-		log.Warn("Setting error more than once!")
-	}
-}
-
-func (b *streamingResponse) SetResponseResult(r interface{}) {
-	if b.enc == nil {
-		log.Warn("Unable to set result on closed response")
-		return
-	}
-	b.commit()
-	b.enc.Encode(NewResult(r, b.id))
-}
-
-type legacyStreamingResponse struct {
-	raw io.Writer
-}
-
-func (b *legacyStreamingResponse) Close() error {
-	b.raw = nil
-	return nil
-}
-
-func (b *legacyStreamingResponse) SetID(id interface{}) {
-	log.Debug("SetId unused for Legacy streaming")
-}
-
-func (b *legacyStreamingResponse) Write(p []byte) (int, error) {
-	return b.raw.Write(p)
-}
-
-func (b *legacyStreamingResponse) SetResponseError(e error) {
-	log.Debug("SetResponseError unused for Legacy streaming")
-}
-
-func (b *legacyStreamingResponse) SetResponseResult(result interface{}) {
-	switch converted := result.(type) {
-	case string, int, int16, int32, int64, int8:
-		io.WriteString(b, fmt.Sprintf("%v", converted))
-	default:
-		log.Crit("Unknown input result", "result", result)
-	}
-	// And thats it
-	b.raw = nil
 }
 
 // Process : Parse and process request from data
