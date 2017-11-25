@@ -147,7 +147,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	if err == nil {
 		stdin.Close()
 	} else {
-		m.logger.Error("stdin", err)
+		m.logger.Error("stdin", "err", err)
 		return nil, nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdin")
 	}
 
