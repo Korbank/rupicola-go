@@ -15,7 +15,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 
-	"./rupicolarpc"
+	"rupicolarpc"
 	"gopkg.in/yaml.v2"
 )
 

@@ -13,7 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"./rupicolarpc"
+	"rupicolarpc"
+
 	log "github.com/inconshreveable/log15"
 	"github.com/spf13/pflag"
 )
