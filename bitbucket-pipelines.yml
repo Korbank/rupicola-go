@@ -15,4 +15,5 @@ pipelines:
           - cd "${PACKAGE_PATH}"
           - go get -v
           - go build -v
-          - go test -v
+          - go test -v # test main package
+          - go test -v "./vendor/rupicolarpc" # test library
