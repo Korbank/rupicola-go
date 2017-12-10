@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,16 +17,24 @@ import (
 	"path/filepath"
 
 	"rupicolarpc"
+
 	"gopkg.in/yaml.v2"
 )
 
 // Limits ...
 type Limits struct {
-	ReadTimeout time.Duration `yaml:"read-timeout"`
-	ExecTimeout time.Duration `yaml:"exec-timeout"`
-	PayloadSize uint32        `yaml:"payload-size"`
-	MaxResponse uint32        `yaml:"max-response"`
+	ReadTimeout time.Duration `yaml:"read-timeout,omitempty"`
+	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
+	PayloadSize uint32        `yaml:"payload-size,omitempty"`
+	MaxResponse uint32        `yaml:"max-response,omitempty"`
 }
+
+type methodLimits struct {
+	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
+	MaxResponse int64         `yaml:"max-response,omitempty"`
+}
+
+type MethodLimits methodLimits
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
@@ -62,7 +71,11 @@ type MethodDef struct {
 		Args  []methodArgs
 		RunAs RunAs `yaml:",omitempty"`
 	} `yaml:"invoke"`
+	// Pointer because we need to know when its unsed
+	Limits *MethodLimits
 	logger log.Logger
+	// unused parameter
+	Output interface{}
 }
 
 // MethodParamType ...
@@ -124,7 +137,9 @@ type Bind struct {
 	// Only for HTTPS
 	Key string
 	// Only for Unix [default=660]
-	Mode uint32
+	Mode os.FileMode
+	UID  *int
+	GID  *int
 }
 
 // Protocol - define bind points, auth and URI paths
@@ -140,6 +155,20 @@ type Protocol struct {
 		Streamed string
 		RPC      string
 	}
+}
+
+func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// This should just work, not be fast
+	var parsed methodLimits
+
+	parsed.ExecTimeout = -1
+	parsed.MaxResponse = -1
+	if err := unmarshal(&parsed); err != nil {
+		return err
+	}
+	*l = MethodLimits(parsed)
+
+	return nil
 }
 
 // UnmarshalYAML ignore
@@ -362,7 +391,7 @@ func (m *MethodDef) Validate() error {
 
 func (conf *RupicolaConfig) readConfig(configFilePath string, recursive bool) error {
 	by, err := ioutil.ReadFile(configFilePath)
-	if err := yaml.Unmarshal(by, conf); err != nil {
+	if err := yaml.UnmarshalStrict(by, conf); err != nil {
 		return err
 	}
 
@@ -385,6 +414,19 @@ func NewConfig() *RupicolaConfig {
 	cfg.Limits = Limits{10000, 0, 5242880, 5242880}
 	return &cfg
 }
+func shamefullFileModeFix(inout *os.FileMode) error {
+	// Well yeah, this is ugly bug originating
+	// from first version it uses DEC values insted OCT (no 0 prefix)
+	// so we need to convert it...
+
+	// 9 bits - from 0 to 0777
+	mode, err := strconv.ParseUint(strconv.FormatUint(uint64(*inout), 10), 8, 9)
+	if err != nil {
+		return err
+	}
+	*inout = os.FileMode(mode)
+	return nil
+}
 
 // ParseConfig from file
 func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
@@ -400,7 +442,9 @@ func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
 		if err := v.Validate(); err != nil {
 			return nil, err
 		}
-
+		if v.Limits == nil {
+			v.Limits = &MethodLimits{-1, -1}
+		}
 		// If Gid or Uid is empty assign it from current process
 		// We cant use 0 as empty (this is root on unix, and someone could set it)
 		if v.InvokeInfo.RunAs.GID == nil {
@@ -414,6 +458,29 @@ func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
 		}
 
 		v.InvokeInfo.Delay *= time.Second
+	}
+	for _, bind := range cfg.Protocol.Bind {
+		if bind.Mode == 0 {
+			bind.Mode = 0666
+		} else {
+			if err = shamefullFileModeFix(&bind.Mode); err != nil {
+				log.Error("FileMode parse failed", "address", bind.Address, "mode", bind.Mode)
+				return nil, err
+			}
+		}
+		// Now set proper UID/GID
+		if bind.UID != nil || bind.GID != nil {
+
+			if bind.UID == nil {
+				uid := os.Getuid()
+				bind.UID = &uid
+			}
+
+			if bind.GID == nil {
+				gid := os.Getgid()
+				bind.GID = &gid
+			}
+		}
 	}
 	cfg.Limits.ExecTimeout *= time.Millisecond
 	cfg.Limits.ReadTimeout *= time.Millisecond

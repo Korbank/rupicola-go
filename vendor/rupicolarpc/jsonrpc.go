@@ -12,6 +12,11 @@ import "context"
 // ContextKey : Supported keys in context
 type ContextKey int
 
+var (
+	defaultRPCLimits       = limits{0, 5242880}
+	defaultStreamingLimits = limits{0, 0}
+)
+
 const (
 	// RupicalaContextKeyContext : Custom data assigned to process
 	RupicalaContextKeyContext ContextKey = 0
@@ -33,6 +38,28 @@ const (
 // Invoker is interface for method invoked by rpc server
 type Invoker interface {
 	Invoke(context.Context, JsonRpcRequest) (interface{}, error)
+}
+
+type MethodDef struct {
+	Invoker
+	limits
+}
+
+// Execution timmeout change maximum allowed execution time
+// 0 = unlimited
+func (m *MethodDef) ExecutionTimeout(timeout time.Duration) {
+	m.ExecTimeout = timeout
+}
+
+// MaxSize sets maximum response size in bytes. 0 = unlimited
+// Note this excludes JSON wrapping and count final encoding
+// eg. size after base64 encoding
+func (m *MethodDef) MaxSize(size uint) {
+	m.MaxResponse = size
+}
+
+func (m *MethodDef) Invoke(c context.Context, r JsonRpcRequest) (interface{}, error) {
+	return m.Invoker.Invoke(c, r)
 }
 
 // Yes, real jsonrpc server would need to
@@ -230,21 +257,27 @@ func (r *ExceptionalLimitedReader) Read(p []byte) (n int, err error) {
 
 type limits struct {
 	ExecTimeout time.Duration
-	MaxResponse uint32
+	MaxResponse uint
 }
+
 type JsonRpcProcessor struct {
-	methods map[string]map[MethodType]Invoker
-	Limits  limits
+	methods map[string]map[MethodType]MethodDef
+	limits  map[MethodType]limits
 }
 
 // AddMethod add method
-func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) {
+func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) *MethodDef {
 	container, ok := p.methods[name]
 	if !ok {
-		container = make(map[MethodType]Invoker)
+		container = make(map[MethodType]MethodDef)
 		p.methods[name] = container
 	}
-	container[metype] = method
+	methodDef := MethodDef{
+		Invoker: method,
+		limits:  p.limits[metype],
+	}
+	container[metype] = methodDef
+	return &methodDef
 }
 
 // AddMethodFunc add method as func
@@ -255,8 +288,12 @@ func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method 
 // NewJsonRpcProcessor create new json rpc processor
 func NewJsonRpcProcessor() *JsonRpcProcessor {
 	return &JsonRpcProcessor{
-		make(map[string]map[MethodType]Invoker),
-		limits{0, 5242880},
+		methods: make(map[string]map[MethodType]MethodDef),
+		limits: map[MethodType]limits{
+			RPCMethod:             defaultRPCLimits,
+			StreamingMethod:       defaultStreamingLimits,
+			StreamingMethodLegacy: defaultStreamingLimits,
+		},
 	}
 }
 
@@ -275,6 +312,7 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		}
 		return err
 	}
+
 	response.SetID(request.ID)
 
 	if !request.isValid() {
@@ -292,22 +330,32 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	// now check is requested type is supported
 	m, okm := ms[metype]
 	if !okm {
-		log.Error("required type for method not found\n", "type", metype, "method", request.Method)
+		log.Error("required type for method not found", "type", metype, "method", request.Method)
 		response.SetResponseError(MethodNotFoundError)
 		return MethodNotFoundError
 	}
 
+	timeout := p.limits[metype].ExecTimeout
+	if timeout > 0 {
+		kontext, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		ctx = kontext
+	}
+
 	result, err := m.Invoke(ctx, request)
 	if err != nil {
+		log.Error("method failed", "method", request.Method, "err", err)
 		response.SetResponseError(err)
 		return err
 	}
+	//TODO: Use limiter here not in method implementation
 	// Rpc method could return reader and inside use routine to provide endless stream of data
 	// to prevent this we are using same exec context and previously set timeout
 	switch result := result.(type) {
 	case io.Reader:
 		_, err := io.Copy(response, result)
 		if err != nil && err != io.EOF {
+			log.Error("stream copy failed (possible limit exceed)", "method", request.Method, "err", err)
 			response.SetResponseError(err)
 			return err
 		}
@@ -324,12 +372,6 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx inter
 	var rpcResponser rpcResponser
 	kontext := context.Background()
 	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
-
-	if p.Limits.ExecTimeout > 0 {
-		ctx, cancel := context.WithTimeout(kontext, p.Limits.ExecTimeout)
-		defer cancel()
-		kontext = ctx
-	}
 
 	switch metype {
 	case RPCMethod:

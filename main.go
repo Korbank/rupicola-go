@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"rupicolarpc"
@@ -183,7 +185,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		writer = writerEncoder
 	}
 
-	if r.parent.limits.MaxResponse > 0 {
+	if m.Limits.MaxResponse > 0 {
 		reader = rupicolarpc.ExceptionalLimitRead(reader, int64(r.parent.limits.MaxResponse))
 	}
 
@@ -234,6 +236,29 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	return reader, nil
 }
 
+func registerCleanup(config *RupicolaConfig) {
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
+	go func(c chan os.Signal) {
+		// Wait for a SIGINT or SIGKILL:
+		sig := <-c
+		log.Info("Caught signal: shutting down.", "signal", sig)
+		// Stop listening (and unlink the socket if unix type):
+		for _, bind := range config.Protocol.Bind {
+			if bind.Type != Unix {
+				continue
+			}
+			if err := os.Remove(bind.Address); err != nil {
+				log.Error("Unable to unlink", "address", bind.Address, "err", err)
+			} else {
+				log.Debug("Unlinked UNIX address", "address", bind.Address)
+			}
+		}
+		// And we're done:
+		os.Exit(0)
+	}(sigc)
+}
+
 func main() {
 	configPath := pflag.String("config", "", "Specify directory or config file")
 	pflag.Parse()
@@ -255,7 +280,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	rupicolaProcessor := rupicolaProcessor{config: configuration, limits: configuration.Limits, processor: rupicolarpc.NewJsonRpcProcessor()}
+	registerCleanup(configuration)
+
+	rupicolaProcessor := rupicolaProcessor{
+		config:    configuration,
+		limits:    configuration.Limits,
+		processor: rupicolarpc.NewJsonRpcProcessor()}
 
 	for k, v := range configuration.Methods {
 		var metype rupicolarpc.MethodType
@@ -264,7 +294,15 @@ func main() {
 		} else {
 			metype = rupicolarpc.RPCMethod
 		}
-		rupicolaProcessor.processor.AddMethod(k, metype, v)
+		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+
+		if v.Limits.ExecTimeout >= 0 {
+			method.ExecutionTimeout(v.Limits.ExecTimeout)
+		}
+		if v.Limits.MaxResponse >= 0 {
+			method.MaxSize(uint(v.Limits.MaxResponse))
+		}
+
 	}
 
 	failureChannel := make(chan error)
@@ -296,10 +334,23 @@ func main() {
 				//todo: check
 				log.Info("atarting listener", "type", "unix", "address", bind.Address)
 				srv.Addr = bind.Address
+
+				// Change umask to ensure socker is created with right
+				// permissions (at this point no other IO opeations are running)
+				// and then restore previous umask
+				oldmask := syscall.Umask(int(bind.Mode) ^ 0777)
 				ln, err := net.Listen("unix", bind.Address)
+				syscall.Umask(oldmask)
+
+				defer ln.Close()
 				if err != nil {
 					failureChannel <- err
 				} else {
+					if err := os.Chown(bind.Address, *bind.UID, *bind.GID); err != nil {
+						log.Crit("Setting permission failed", "address", bind.Address, "uid", *bind.UID, "gid", *bind.GID)
+						failureChannel <- err
+						return
+					}
 					failureChannel <- srv.Serve(ln)
 				}
 			}
