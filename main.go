@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log/syslog"
 	"net"
 	"net/http"
 	"os"
@@ -279,7 +280,34 @@ func main() {
 		log.Crit("No valid bind points")
 		os.Exit(1)
 	}
-
+	var logLevel log.Lvl
+	switch configuration.Log.LogLevel {
+	case LLError:
+		logLevel = log.LvlError
+	case LLWarn:
+		logLevel = log.LvlWarn
+	case LLInfo:
+		logLevel = log.LvlInfo
+	case LLDebug:
+		fallthrough
+	case LLTrace:
+		logLevel = log.LvlDebug
+	case LLOff:
+		logLevel = -1
+	}
+	var handler log.Handler
+	switch configuration.Log.Backend {
+	case BackendStdout:
+		handler = log.StdoutHandler
+	case BackendSyslog:
+		h, err := log.SyslogNetHandler("", configuration.Log.Path, syslog.LOG_DAEMON, "rupicola", log.JsonFormat())
+		if err != nil {
+			log.Error("Syslog connection failed", "err", err)
+			os.Exit(1)
+		}
+		handler = h
+	}
+	log.Root().SetHandler(log.LvlFilterHandler(logLevel, handler))
 	registerCleanup(configuration)
 
 	rupicolaProcessor := rupicolaProcessor{
@@ -342,10 +370,10 @@ func main() {
 				ln, err := net.Listen("unix", bind.Address)
 				syscall.Umask(oldmask)
 
-				defer ln.Close()
 				if err != nil {
 					failureChannel <- err
 				} else {
+					defer ln.Close()
 					if err := os.Chown(bind.Address, *bind.UID, *bind.GID); err != nil {
 						log.Crit("Setting permission failed", "address", bind.Address, "uid", *bind.UID, "gid", *bind.GID)
 						failureChannel <- err

@@ -35,16 +35,35 @@ type methodLimits struct {
 }
 
 type MethodLimits methodLimits
+type LogLevel int8
+type Backend int8
+
+const (
+	BackendStdout = 1 << iota
+	BackendSyslog = 1 << iota
+)
+const (
+	LLOff LogLevel = iota
+	LLTrace
+	LLDebug
+	LLInfo
+	LLWarn
+	LLError
+)
+
+type LogDef struct {
+	Backend
+	LogLevel
+	Path string
+}
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
 	Include  []includeConfig
 	Protocol Protocol
 	Limits   Limits
-	Log      struct {
-		Level string
-	}
-	Methods map[string]*MethodDef
+	Log      LogDef
+	Methods  map[string]*MethodDef
 }
 
 // MethodParam ...
@@ -155,6 +174,45 @@ type Protocol struct {
 		Streamed string
 		RPC      string
 	}
+}
+
+func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var logLevel struct {
+		Level   string
+		Backend string
+		Path    string
+	}
+	if err := unmarshal(&logLevel); err != nil {
+		return err
+	}
+	ll.Path = logLevel.Path
+	switch strings.ToLower(logLevel.Backend) {
+	case "syslog":
+		ll.Backend = BackendSyslog
+	case "stdout":
+		fallthrough
+	case "":
+		ll.Backend = BackendStdout
+	default:
+		return fmt.Errorf("Unknown backend %s", logLevel.Backend)
+	}
+	switch strings.ToLower(logLevel.Level) {
+	case "off":
+		ll.LogLevel = LLOff
+	case "trace":
+		ll.LogLevel = LLTrace
+	case "debug":
+		ll.LogLevel = LLDebug
+	case "info":
+		ll.LogLevel = LLInfo
+	case "warn":
+		ll.LogLevel = LLWarn
+	case "error":
+		ll.LogLevel = LLError
+	default:
+		return fmt.Errorf("unknown log level: %s", logLevel.Level)
+	}
+	return nil
 }
 
 func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
