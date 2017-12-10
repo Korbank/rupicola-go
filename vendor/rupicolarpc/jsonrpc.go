@@ -261,38 +261,46 @@ type limits struct {
 }
 
 type JsonRpcProcessor struct {
-	methods map[string]map[MethodType]MethodDef
-	limits  map[MethodType]limits
+	methods map[string]map[MethodType]*MethodDef
+	limits  map[MethodType]*limits
 }
 
 // AddMethod add method
 func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invoker) *MethodDef {
 	container, ok := p.methods[name]
 	if !ok {
-		container = make(map[MethodType]MethodDef)
+		container = make(map[MethodType]*MethodDef)
 		p.methods[name] = container
 	}
-	methodDef := MethodDef{
+	methodDef := &MethodDef{
 		Invoker: method,
-		limits:  p.limits[metype],
+		// Each method will have copy of default values
+		limits: *p.limits[metype],
 	}
 	container[metype] = methodDef
-	return &methodDef
+	return methodDef
 }
 
 // AddMethodFunc add method as func
 func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method methodFunc) {
 	p.AddMethod(name, metype, method)
 }
+func (p *JsonRpcProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
+	p.limits[metype].ExecTimeout = timeout
+}
 
 // NewJsonRpcProcessor create new json rpc processor
 func NewJsonRpcProcessor() *JsonRpcProcessor {
+	copyRPCLimits := defaultRPCLimits
+	copyStreamingLimits := defaultStreamingLimits
+	copyStreamingLegacyLimits := defaultStreamingLimits
+
 	return &JsonRpcProcessor{
-		methods: make(map[string]map[MethodType]MethodDef),
-		limits: map[MethodType]limits{
-			RPCMethod:             defaultRPCLimits,
-			StreamingMethod:       defaultStreamingLimits,
-			StreamingMethodLegacy: defaultStreamingLimits,
+		methods: make(map[string]map[MethodType]*MethodDef),
+		limits: map[MethodType]*limits{
+			RPCMethod:             &copyRPCLimits,
+			StreamingMethod:       &copyStreamingLimits,
+			StreamingMethodLegacy: &copyStreamingLegacyLimits,
 		},
 	}
 }
@@ -335,36 +343,52 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		return MethodNotFoundError
 	}
 
-	timeout := p.limits[metype].ExecTimeout
+	timeout := m.limits.ExecTimeout
 	if timeout > 0 {
+		log.Crit("Exec", "t", timeout)
 		kontext, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		ctx = kontext
 	}
 
-	result, err := m.Invoke(ctx, request)
-	if err != nil {
-		log.Error("method failed", "method", request.Method, "err", err)
-		response.SetResponseError(err)
-		return err
-	}
-	//TODO: Use limiter here not in method implementation
-	// Rpc method could return reader and inside use routine to provide endless stream of data
-	// to prevent this we are using same exec context and previously set timeout
-	switch result := result.(type) {
-	case io.Reader:
-		_, err := io.Copy(response, result)
-		if err != nil && err != io.EOF {
-			log.Error("stream copy failed (possible limit exceed)", "method", request.Method, "err", err)
-			response.SetResponseError(err)
-			return err
-		}
-		return nil
+	done := make(chan struct{})
+	var masterError error
 
-	default:
-		response.SetResponseResult(result)
-		return nil
+	go func() {
+		defer close(done)
+
+		result, err := m.Invoke(ctx, request)
+		if err != nil {
+			log.Error("method failed", "method", request.Method, "err", err)
+			response.SetResponseError(err)
+			masterError = err
+			return
+		}
+		//TODO: Use limiter here not in method implementation
+		// Rpc method could return reader and inside use routine to provide endless stream of data
+		// to prevent this we are using same exec context and previously set timeout
+		switch result := result.(type) {
+		case io.Reader:
+			_, err := io.Copy(response, result)
+			if err != nil && err != io.EOF {
+				log.Error("stream copy failed (possible limit exceed)", "method", request.Method, "err", err)
+				response.SetResponseError(err)
+				masterError = err
+			}
+		default:
+			response.SetResponseResult(result)
+			masterError = nil
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		response.SetResponseError(TimeoutError)
+		masterError = TimeoutError
 	}
+
+	return masterError
 }
 
 // Process : Parse and process request from data
@@ -387,20 +411,5 @@ func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx inter
 
 	defer rpcResponser.Close()
 
-	done := make(chan struct{})
-	var err error
-	go func() {
-		defer close(done)
-		// TODO: In case of interrupt we end processing
-		err = p.processWrapper(kontext, data, rpcResponser, metype)
-	}()
-
-	select {
-	case <-done:
-	case <-kontext.Done():
-		rpcResponser.SetResponseError(TimeoutError)
-		err = TimeoutError
-	}
-
-	return err
+	return p.processWrapper(kontext, data, rpcResponser, metype)
 }

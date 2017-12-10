@@ -108,7 +108,7 @@ func TestMethodRpcTimeout(t *testing.T) {
 	responseError := errors.New("string")
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
-	rpc.Limits.ExecTimeout = time.Second
+	rpc.ExecutionTimeout(RPCMethod, time.Second)
 	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
 		time.Sleep(2 * time.Second)
 		t.Fail()
@@ -116,6 +116,7 @@ func TestMethodRpcTimeout(t *testing.T) {
 	})
 	err := rpc.Process(strings.NewReader(requestString), response, nil, RPCMethod)
 	if err != TimeoutError {
+		t.Log(err)
 		t.Fail()
 	}
 	if response.String() != responseString {
