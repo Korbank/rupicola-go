@@ -161,7 +161,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 // Invoke is implementation of jsonrpc.Invoker
 func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
 	// We can cancel or set deadline for current context (only shorter - default no limit)
-	r, process, err := m.prepareCommand(ctx, req)
+	_, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -184,10 +184,6 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder
-	}
-
-	if m.Limits.MaxResponse > 0 {
-		reader = rupicolarpc.ExceptionalLimitRead(reader, int64(r.parent.limits.MaxResponse))
 	}
 
 	go func() {

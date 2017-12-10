@@ -19,8 +19,10 @@ type rpcResponse struct {
 type rpcResponser interface {
 	io.WriteCloser
 	SetID(*interface{})
-	SetResponseResult(interface{})
-	SetResponseError(error)
+	SetResponseResult(interface{}) error
+	SetResponseError(error) error
+	GetWriter() io.Writer
+	Writer(io.Writer)
 }
 
 func newRPCResponse(w io.Writer) rpcResponser {
@@ -33,17 +35,32 @@ func newRPCResponse(w io.Writer) rpcResponser {
 	}
 }
 
+func (b *rpcResponse) GetWriter() io.Writer {
+	return b.raw
+}
+
+func (b *rpcResponse) Writer(w io.Writer) {
+	b.raw = w
+}
+
 func (b *rpcResponse) Close() error {
+	defer func() {
+		b.buffer = nil
+		b.dst = nil
+		b.raw = nil
+	}()
 	if b.buffer != nil {
 		if b.writeUsed {
-			b.SetResponseResult(b.buffer.String())
+			if err := b.SetResponseResult(b.buffer.String()); err != nil {
+				return err
+			}
 		}
 		n, err := io.Copy(b.raw, b.buffer)
-		log.Debug("close RpcResponse", "n", n, "err", err)
+		if err != nil {
+			log.Debug("close RpcResponse", "n", n, "err", err)
+			return err
+		}
 	}
-	b.buffer = nil
-	b.dst = nil
-	b.raw = nil
 	return nil
 }
 
@@ -61,20 +78,22 @@ func (b *rpcResponse) Write(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
 
-func (b *rpcResponse) SetResponseError(e error) {
+func (b *rpcResponse) SetResponseError(e error) error {
 	b.writeUsed = false
 	b.buffer.Reset()
 	if b.id != nil {
-		b.dst.Encode(NewError(e, b.id))
+		return b.dst.Encode(NewError(e, b.id))
 	}
+	return nil
 }
 
-func (b *rpcResponse) SetResponseResult(result interface{}) {
+func (b *rpcResponse) SetResponseResult(result interface{}) error {
 	b.writeUsed = false
 	b.buffer.Reset()
 	if b.id != nil {
-		b.dst.Encode(NewResult(result, b.id))
+		return b.dst.Encode(NewResult(result, b.id))
 	}
+	return nil
 }
 
 type streamingResponse struct {
@@ -86,24 +105,37 @@ type streamingResponse struct {
 }
 
 func newStreamingResponse(writer io.Writer, n int) rpcResponser {
-	return &streamingResponse{
+	result := &streamingResponse{
 		raw:       writer,
 		buffer:    bytes.NewBuffer(make([]byte, 0, 128)),
 		enc:       json.NewEncoder(writer),
 		chunkSize: n,
 	}
+	result.Writer(writer)
+	return result
 }
 
-func (b *streamingResponse) Close() error {
-	b.commit()
+func (b *streamingResponse) GetWriter() io.Writer {
+	return b.raw
+}
+
+func (b *streamingResponse) Writer(w io.Writer) {
+	b.raw = w
+	b.enc = json.NewEncoder(b.raw)
+}
+
+func (b *streamingResponse) Close() (err error) {
+	if err = b.commit(); err != nil {
+		return
+	}
 	if b.enc != nil {
 		// Write footer (if we got error somewhere its alrady send)
-		b.SetResponseResult("Done")
+		err = b.SetResponseResult("Done")
 	}
 	b.enc = nil
-	return nil
+	return
 }
-func (b *streamingResponse) commit() {
+func (b *streamingResponse) commit() (err error) {
 	if b.buffer.Len() <= 0 {
 		return
 	}
@@ -111,14 +143,17 @@ func (b *streamingResponse) commit() {
 		Data interface{} `json:"data"`
 	}
 	resp.Data = b.buffer.Bytes()
-	b.enc.Encode(resp)
+	err = b.enc.Encode(resp)
 	b.buffer.Reset()
+	return
 }
+
 func (b *streamingResponse) SetID(id *interface{}) {
 	b.id = id
 }
 
-func (b *streamingResponse) Write(p []byte) (int, error) {
+func (b *streamingResponse) Write(p []byte) (n int, err error) {
+	n = 0
 	if b.enc == nil {
 		log.Warn("Write disabled on closed response")
 		return 0, io.EOF
@@ -128,71 +163,112 @@ func (b *streamingResponse) Write(p []byte) (int, error) {
 	}
 	if b.chunkSize <= 0 {
 		result := bytes.SplitAfter(p, []byte("\n"))
+		var npart int
 		for _, v := range result {
 			if v[len(v)-1] == '\n' {
 				// special case with dangling data in buffer
 				if b.buffer.Len() != 0 {
-					b.buffer.Write(v)
+					npart, err = b.buffer.Write(v)
+					if err != nil {
+						return
+					}
+					n += npart
 					// assign buffer bytes as source
 					v = b.buffer.Bytes()
 				}
 				resp.Data = string(v[0 : len(v)-1])
-				b.enc.Encode(resp)
+				err = b.enc.Encode(resp)
+				if err != nil {
+					return
+				}
+				n += len(v)
 			} else {
 				// Oh dang! We get some leftovers...
-				b.buffer.Write(v)
+				npart, err = b.buffer.Write(v)
+				if err != nil {
+					return n, err
+				}
+				n += npart
 			}
 		}
-		return len(p), nil
+		return
 	}
 	if len(p)+b.buffer.Len() >= b.chunkSize {
-		readTotal := 0
+		var npart int
 		missingBytes := (b.chunkSize - b.buffer.Len()) % b.chunkSize
 		if missingBytes != b.chunkSize {
-			n, err := b.buffer.Write(p[0:missingBytes])
+			npart, err = b.buffer.Write(p[0:missingBytes])
 			if err != nil {
 				return n, err
 			}
-			readTotal += n
-			b.commit()
+			n += npart
+			err = b.commit()
+			if err != nil {
+				return
+			}
 		}
 		chunk := missingBytes
 
 		for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
 			resp.Data = p[chunk : chunk+b.chunkSize]
-			readTotal += b.chunkSize
-			if err := b.enc.Encode(resp); err != nil {
-				return readTotal, err
+			n += b.chunkSize
+			if err = b.enc.Encode(resp); err != nil {
+				return
 			}
 		}
-		lastN, err := b.buffer.Write(p[chunk:len(p)])
-		return readTotal + lastN, err
-	}
-
-	return b.buffer.Write(p)
-}
-
-func (b *streamingResponse) SetResponseError(e error) {
-	if b.enc != nil {
-		b.commit()
-		b.enc.Encode(NewError(e, b.id))
-		b.Close()
-	} else {
-		log.Warn("Setting error more than once!")
-	}
-}
-
-func (b *streamingResponse) SetResponseResult(r interface{}) {
-	if b.enc == nil {
-		log.Warn("Unable to set result on closed response")
+		var lastN int
+		lastN, err = b.buffer.Write(p[chunk:len(p)])
+		if err != nil {
+			return
+		}
+		n += lastN
 		return
 	}
-	b.commit()
-	b.enc.Encode(NewResult(r, b.id))
+	npart, erro := b.buffer.Write(p)
+	if erro != nil {
+		return
+	}
+	n += npart
+	return
+}
+
+func (b *streamingResponse) SetResponseError(e error) (err error) {
+	if b.enc != nil {
+		if err = b.commit(); err != nil {
+			return
+		}
+		err = b.enc.Encode(NewError(e, b.id))
+		defer b.Close()
+		if err != nil {
+			return
+		}
+		return b.Close()
+	}
+	log.Warn("Setting error more than once!")
+	return
+}
+
+func (b *streamingResponse) SetResponseResult(r interface{}) error {
+	if b.enc == nil {
+		log.Warn("Unable to set result on closed response")
+		return nil
+	}
+	if err := b.commit(); err != nil {
+		return err
+	}
+	return b.enc.Encode(NewResult(r, b.id))
 }
 
 type legacyStreamingResponse struct {
 	raw io.Writer
+}
+
+func (b *legacyStreamingResponse) GetWriter() io.Writer {
+	return b.raw
+}
+
+func (b *legacyStreamingResponse) Writer(w io.Writer) {
+	b.raw = w
 }
 
 func (b *legacyStreamingResponse) Close() error {
@@ -208,17 +284,19 @@ func (b *legacyStreamingResponse) Write(p []byte) (int, error) {
 	return b.raw.Write(p)
 }
 
-func (b *legacyStreamingResponse) SetResponseError(e error) {
+func (b *legacyStreamingResponse) SetResponseError(e error) error {
 	log.Debug("SetResponseError unused for Legacy streaming")
+	return nil
 }
 
-func (b *legacyStreamingResponse) SetResponseResult(result interface{}) {
+func (b *legacyStreamingResponse) SetResponseResult(result interface{}) (err error) {
 	switch converted := result.(type) {
 	case string, int, int16, int32, int64, int8:
-		io.WriteString(b, fmt.Sprintf("%v", converted))
+		_, err = io.WriteString(b, fmt.Sprintf("%v", converted))
 	default:
 		log.Crit("Unknown input result", "result", result)
 	}
 	// And thats it
 	b.raw = nil
+	return
 }

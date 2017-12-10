@@ -233,6 +233,28 @@ func (m methodFunc) Invoke(ctx context.Context, in JsonRpcRequest) (interface{},
 	return m(in, ctx)
 }
 
+// ExceptionalLimitedWriter returns ErrUnexpectedEOF after reaching limit
+type ExceptionalLimitedWriter struct {
+	R io.Writer
+	N int64
+}
+
+// ExceptionalLimitWrite construct from reader
+func ExceptionalLimitWrite(r io.Writer, n int64) io.Writer {
+	return &ExceptionalLimitedWriter{r, n}
+}
+
+// Write implement io.Writer
+func (r *ExceptionalLimitedWriter) Write(p []byte) (n int, err error) {
+	if r.N <= 0 || int64(len(p)) > r.N {
+		return 0, io.ErrUnexpectedEOF
+	}
+
+	n, err = r.R.Write(p)
+	r.N -= int64(n)
+	return
+}
+
 // ExceptionalLimitedReader returns ErrUnexpectedEOF after reaching limit
 type ExceptionalLimitedReader struct {
 	R io.Reader
@@ -343,6 +365,10 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		return MethodNotFoundError
 	}
 
+	if m.limits.MaxResponse != 0 {
+		response.Writer(ExceptionalLimitWrite(response.GetWriter(), int64(m.limits.MaxResponse)))
+	}
+
 	timeout := m.limits.ExecTimeout
 	if timeout > 0 {
 		log.Crit("Exec", "t", timeout)
@@ -371,13 +397,16 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		case io.Reader:
 			_, err := io.Copy(response, result)
 			if err != nil && err != io.EOF {
-				log.Error("stream copy failed (possible limit exceed)", "method", request.Method, "err", err)
+				if err == io.ErrUnexpectedEOF {
+					log.Error("stream copy failed", "err", "limit", "method", request.Method)
+				} else {
+					log.Error("stream copy failed", "method", request.Method, "err", err)
+				}
 				response.SetResponseError(err)
 				masterError = err
 			}
 		default:
-			response.SetResponseResult(result)
-			masterError = nil
+			masterError = response.SetResponseResult(result)
 		}
 	}()
 
