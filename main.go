@@ -26,8 +26,6 @@ var (
 	rpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
 )
 
-const commandBufferSize int32 = 1024
-
 type cmdEx *exec.Cmd
 
 type rupicolaRPCContext struct {
@@ -136,7 +134,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	}
 
 	m.logger.Debug("prepared method invocation", "args", appArguments)
-	process := exec.Command(m.InvokeInfo.Exec, appArguments...)
+	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
 
 	// Make it "better"
 	SetUserGroup(process, m)
@@ -165,13 +163,13 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	}
 	err = process.Start()
 	if err != nil {
-		m.logger.Error("err", "err", err)
+		m.logger.Error("Unable to start process", "err", err)
 		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
 	}
 
 	pr, pw := io.Pipe()
 	writer := io.Writer(pw)
-	reader := io.Reader(pr)
+	reader := io.ReadCloser(pr)
 
 	if m.Encoding == Base64 {
 		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
@@ -185,37 +183,26 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 
 		time.Sleep(m.InvokeInfo.Delay)
 		m.logger.Debug("Read loop started")
-		byteReadChunk := make([]byte, commandBufferSize)
-		for true {
-			read, err := stdout.Read(byteReadChunk)
-			if err != nil {
-				stdout.Close()
-				if err != io.EOF {
-					m.logger.Error("error reading from pipe", "err", err)
-				} else {
-					m.logger.Debug("reading from pipe finished")
-				}
-				pw.CloseWithError(err)
-				//heartBeat <- err
-				break
+
+		_, err := io.Copy(writer, stdout)
+		if err != nil {
+			if err := process.Process.Kill(); err != nil {
+				log.Error("Sending kill failed", "err", err)
 			}
 
-			if _, e := writer.Write(byteReadChunk[0:read]); e != nil {
-				// Ignore pipe error for delayed execution
-				if e != io.ErrClosedPipe || m.InvokeInfo.Delay <= 0 {
-					log.Error("Writing to output failed", "err", e)
-				}
-				stdout.Close()
-				pw.CloseWithError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "write"))
-				break
+			if err != io.EOF {
+				m.logger.Error("error reading from pipe", "err", err)
+			} else {
+				m.logger.Debug("reading from pipe finished")
 			}
+			pw.CloseWithError(err)
+		}
 
-			select {
-			case <-ctx.Done():
-				pw.CloseWithError(rupicolarpc.TimeoutError)
-				break
-			default:
-			}
+		log.Debug("Waiting for clean exit")
+		if err := process.Wait(); err != nil {
+			log.Error("Waiting for close process failed", "err", err)
+		} else {
+			log.Debug("Done")
 		}
 	}()
 	// TODO: Check thys
