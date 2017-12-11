@@ -179,23 +179,31 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 		result := bytes.SplitAfter(p, []byte("\n"))
 		var npart int
 		for _, v := range result {
-			if v[len(v)-1] == '\n' {
+			lenv := len(v)
+
+			if lenv == 0 {
+				// Well looks like this can happen
+				continue
+			}
+
+			if v[lenv-1] == '\n' {
+				lineWithoutEnding := v[:len(v)-1]
 				// special case with dangling data in buffer
 				if b.buffer.Len() != 0 {
-					npart, err = b.buffer.Write(v)
+					npart, err = b.buffer.Write(lineWithoutEnding)
 					if err != nil {
 						return
 					}
-					n += npart
 					// assign buffer bytes as source
-					v = b.buffer.Bytes()
+					lineWithoutEnding = b.buffer.Bytes()
+					b.buffer.Reset()
 				}
-				resp.Data = string(v[0 : len(v)-1])
+				resp.Data = string(lineWithoutEnding)
 				err = b.enc.Encode(resp)
 				if err != nil {
 					return
 				}
-				n += len(v)
+				n += lenv
 			} else {
 				// Oh dang! We get some leftovers...
 				npart, err = b.buffer.Write(v)
