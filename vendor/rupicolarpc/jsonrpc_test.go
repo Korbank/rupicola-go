@@ -3,6 +3,7 @@ package rupicolarpc
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestMethodImmediate(t *testing.T) {
 	}
 }
 
-func TestMethodStreaming(t *testing.T) {
+func TestLegacyMethodStreaming(t *testing.T) {
 	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
 	responseString := "string"
 	response := bytes.NewBuffer(nil)
@@ -70,7 +71,23 @@ func TestMethodStreaming(t *testing.T) {
 	}
 }
 
-func TestMethodStreamingError(t *testing.T) {
+func TestMethodStreaming(t *testing.T) {
+	requestString := `{"jsonrpc":"2.0+s", "method": "method", "params":{}, "id":0}`
+	responseString := fmt.Sprint(`{"jsonrpc":"2.0+s","result":"string","id":0}`, "\n",
+		`{"jsonrpc":"2.0+s","result":"Done","id":0}`, "\n")
+	response := bytes.NewBuffer(nil)
+	rpc := NewJsonRpcProcessor()
+	rpc.AddMethodFunc("method", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return "string", nil })
+	err := rpc.Process(strings.NewReader(requestString), response, nil, StreamingMethod)
+	if err != nil {
+		t.Fail()
+	}
+	if response.String() != responseString {
+		t.Error("\n", response, "\n", responseString)
+	}
+}
+
+func TestLegacyMethodStreamingError(t *testing.T) {
 	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
 	responseString := ""
 	responseError := errors.New("string")
@@ -86,6 +103,21 @@ func TestMethodStreamingError(t *testing.T) {
 	}
 }
 
+func TestMethodStreamingError(t *testing.T) {
+	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
+	responseString := `{"jsonrpc":"2.0+s","error":{"code":-32603,"message":"Internal error","data":"string"},"id":0}` + "\n"
+	responseError := errors.New("string")
+	response := bytes.NewBuffer(nil)
+	rpc := NewJsonRpcProcessor()
+	rpc.AddMethodFunc("method", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
+	err := rpc.Process(strings.NewReader(requestString), response, nil, StreamingMethod)
+	if err != responseError {
+		t.Fail()
+	}
+	if response.String() != responseString {
+		t.Error("\n", response, "\n", responseString)
+	}
+}
 func TestMethodRpcError(t *testing.T) {
 	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
 	responseString := `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error","data":"string"},"id":0}` + "\n"
@@ -108,9 +140,9 @@ func TestMethodRpcTimeout(t *testing.T) {
 	responseError := errors.New("string")
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
-	rpc.ExecutionTimeout(RPCMethod, time.Second)
+	rpc.ExecutionTimeout(RPCMethod, 20*time.Millisecond)
 	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
-		time.Sleep(2 * time.Second)
+		time.Sleep(200 * time.Millisecond)
 		t.Fail()
 		return nil, responseError
 	})
@@ -124,18 +156,42 @@ func TestMethodRpcTimeout(t *testing.T) {
 	}
 }
 
-func TestMethodStreamingTimeout(t *testing.T) {
+func TestLegacyMethodStreamingTimeout(t *testing.T) {
 	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
 	responseString := ""
 	responseError := errors.New("string")
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
-	rpc.AddMethodFunc("method", StreamingMethodLegacy, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
+	rpc.AddMethodFunc("method", StreamingMethodLegacy,
+		func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+			time.Sleep(100 * time.Millisecond)
+			return nil, responseError
+		}).ExecutionTimeout(10 * time.Millisecond)
 	err := rpc.Process(strings.NewReader(requestString), response, nil, StreamingMethodLegacy)
-	if err != responseError {
+	if err != TimeoutError {
 		t.Error(err)
 	}
 	if response.String() != responseString {
+		t.Error("\n", response, "\n", responseString)
+	}
+}
+
+func TestMethodStreamingTimeout(t *testing.T) {
+	requestString := `{"jsonrpc":"2.0", "method": "method", "params":{}, "id":0}`
+	responseString := `{"jsonrpc":"2.0+s","error":{"code":-32099,"message":"Timeout"},"id":0}`
+	responseError := errors.New("string")
+	response := bytes.NewBuffer(nil)
+	rpc := NewJsonRpcProcessor()
+	rpc.AddMethodFunc("method", StreamingMethod,
+		func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+			time.Sleep(200 * time.Millisecond)
+			return nil, responseError
+		}).ExecutionTimeout(10 * time.Millisecond)
+	err := rpc.Process(strings.NewReader(requestString), response, nil, StreamingMethod)
+	if err != TimeoutError {
+		t.Error(err)
+	}
+	if strings.TrimSpace(response.String()) != responseString {
 		t.Error("\n", response, "\n", responseString)
 	}
 }

@@ -97,19 +97,21 @@ func (b *rpcResponse) SetResponseResult(result interface{}) error {
 }
 
 type streamingResponse struct {
-	raw       io.Writer
-	buffer    *bytes.Buffer
-	enc       *json.Encoder
-	id        *interface{}
-	chunkSize int
+	raw        io.Writer
+	buffer     *bytes.Buffer
+	enc        *json.Encoder
+	id         *interface{}
+	chunkSize  int
+	firstWrite bool
 }
 
 func newStreamingResponse(writer io.Writer, n int) rpcResponser {
 	result := &streamingResponse{
-		raw:       writer,
-		buffer:    bytes.NewBuffer(make([]byte, 0, 128)),
-		enc:       json.NewEncoder(writer),
-		chunkSize: n,
+		raw:        writer,
+		buffer:     bytes.NewBuffer(make([]byte, 0, 128)),
+		enc:        json.NewEncoder(writer),
+		chunkSize:  n,
+		firstWrite: true,
 	}
 	result.Writer(writer)
 	return result
@@ -141,8 +143,10 @@ func (b *streamingResponse) commit() (err error) {
 	}
 	var resp struct {
 		Data interface{} `json:"data"`
+		ID   interface{} `json:"id,omitempty"`
 	}
 	resp.Data = b.buffer.Bytes()
+	resp.ID = b.id
 	err = b.enc.Encode(resp)
 	b.buffer.Reset()
 	return
@@ -158,9 +162,19 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 		log.Warn("Write disabled on closed response")
 		return 0, io.EOF
 	}
+	if b.firstWrite {
+		err = b.SetResponseResult("OK")
+		b.firstWrite = false
+		if err != nil {
+			return
+		}
+	}
 	var resp struct {
 		Data interface{} `json:"data"`
+		ID   interface{} `json:"id,omitempty"`
 	}
+	resp.ID = b.id
+	//TODO: Can we do better?
 	if b.chunkSize <= 0 {
 		result := bytes.SplitAfter(p, []byte("\n"))
 		var npart int
@@ -237,11 +251,13 @@ func (b *streamingResponse) SetResponseError(e error) (err error) {
 		if err = b.commit(); err != nil {
 			return
 		}
-		err = b.enc.Encode(NewError(e, b.id))
+		err = b.enc.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
 		defer b.Close()
 		if err != nil {
+			log.Debug("Unable to send error information", "err", err)
 			return
 		}
+		b.enc = nil
 		return b.Close()
 	}
 	log.Warn("Setting error more than once!")
@@ -256,7 +272,7 @@ func (b *streamingResponse) SetResponseResult(r interface{}) error {
 	if err := b.commit(); err != nil {
 		return err
 	}
-	return b.enc.Encode(NewResult(r, b.id))
+	return b.enc.Encode(NewResultEx(r, b.id, JsonRPCversion20s))
 }
 
 type legacyStreamingResponse struct {

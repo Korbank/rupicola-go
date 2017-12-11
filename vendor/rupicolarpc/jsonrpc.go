@@ -17,6 +17,13 @@ var (
 	defaultStreamingLimits = limits{0, 0}
 )
 
+type JsonRPCversion string
+
+var (
+	JsonRPCversion20  JsonRPCversion = "2.0"
+	JsonRPCversion20s                = JsonRPCversion20 + "+s"
+)
+
 const (
 	// RupicalaContextKeyContext : Custom data assigned to process
 	RupicalaContextKeyContext ContextKey = 0
@@ -69,7 +76,7 @@ type jsonRPCRequestOptions map[string]interface{}
 
 // JsonRpcRequest
 type JsonRpcRequest struct {
-	Jsonrpc string
+	Jsonrpc JsonRPCversion
 	Method  string
 	Params  jsonRPCRequestOptions
 	// can be any json valid type (including null)
@@ -107,23 +114,27 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 }
 
 func (r *JsonRpcRequest) isValid() bool {
-	return r.Jsonrpc == "2.0" && r.Method != ""
+	return (r.Jsonrpc == JsonRPCversion20 || r.Jsonrpc == JsonRPCversion20s) && r.Method != ""
 }
 
 type JsonRpcResponse struct {
-	Jsonrpc string      `json:"jsonrpc"`
-	Error   *_Error     `json:"error,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
-	ID      interface{} `json:"id,omitempty"`
+	Jsonrpc JsonRPCversion `json:"jsonrpc"`
+	Error   *_Error        `json:"error,omitempty"`
+	Result  interface{}    `json:"result,omitempty"`
+	ID      interface{}    `json:"id,omitempty"`
 }
 
 // NewResult : Generate new Result response
 func NewResult(a interface{}, id interface{}) *JsonRpcResponse {
-	return &JsonRpcResponse{"2.0", nil, a, id}
+	return NewResultEx(a, id, JsonRPCversion20)
 }
 
-// NewError : Generate new Error response
-func NewError(a error, id interface{}) *JsonRpcResponse {
+func NewResultEx(a, id interface{}, vers JsonRPCversion) *JsonRpcResponse {
+	return &JsonRpcResponse{vers, nil, a, id}
+}
+
+// NewErrorEx : Generate new Error response with custom version
+func NewErrorEx(a error, id interface{}, vers JsonRPCversion) *JsonRpcResponse {
 	var b *_Error
 	switch err := a.(type) {
 	case *_Error:
@@ -132,7 +143,12 @@ func NewError(a error, id interface{}) *JsonRpcResponse {
 		log.Debug("Should not happen - wrapping unknown error:", "err", a)
 		b, _ = NewStandardErrorData(InternalError, err.Error()).(*_Error)
 	}
-	return &JsonRpcResponse{"2.0", b, nil, id}
+	return &JsonRpcResponse{vers, b, nil, id}
+}
+
+// NewError : Generate new error response with JsonRpcversion20
+func NewError(a error, id interface{}) *JsonRpcResponse {
+	return NewErrorEx(a, id, JsonRPCversion20)
 }
 
 type _Error struct {
@@ -177,6 +193,8 @@ var (
 	InvalidRequestError = NewStandardError(InvalidRequest)
 	// TimeoutError - Timeout during request processing
 	TimeoutError = NewServerError(-32099, "Timeout")
+	// LimitExceed - Returned when response is too big
+	LimitExceed = NewServerError(-32098, "Limit Exceed")
 )
 
 // NewServerError from code and message
@@ -233,7 +251,7 @@ func (m methodFunc) Invoke(ctx context.Context, in JsonRpcRequest) (interface{},
 	return m(in, ctx)
 }
 
-// ExceptionalLimitedWriter returns ErrUnexpectedEOF after reaching limit
+// ExceptionalLimitedWriter returns LimitExceed after reaching limit
 type ExceptionalLimitedWriter struct {
 	R io.Writer
 	N int64
@@ -247,7 +265,7 @@ func ExceptionalLimitWrite(r io.Writer, n int64) io.Writer {
 // Write implement io.Writer
 func (r *ExceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 	if r.N <= 0 || int64(len(p)) > r.N {
-		return 0, io.ErrUnexpectedEOF
+		return 0, LimitExceed
 	}
 
 	n, err = r.R.Write(p)
@@ -255,7 +273,7 @@ func (r *ExceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// ExceptionalLimitedReader returns ErrUnexpectedEOF after reaching limit
+// ExceptionalLimitedReader returns LimitExceed after reaching limit
 type ExceptionalLimitedReader struct {
 	R io.Reader
 	N int64
@@ -269,7 +287,7 @@ func ExceptionalLimitRead(r io.Reader, n int64) io.Reader {
 // Read implement io.Read
 func (r *ExceptionalLimitedReader) Read(p []byte) (n int, err error) {
 	if r.N <= 0 || int64(len(p)) > r.N {
-		return 0, io.ErrUnexpectedEOF
+		return 0, LimitExceed
 	}
 
 	n, err = r.R.Read(p)
@@ -304,8 +322,8 @@ func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, method Invo
 }
 
 // AddMethodFunc add method as func
-func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method methodFunc) {
-	p.AddMethod(name, metype, method)
+func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, method methodFunc) *MethodDef {
+	return p.AddMethod(name, metype, method)
 }
 func (p *JsonRpcProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
 	p.limits[metype].ExecTimeout = timeout
@@ -327,9 +345,28 @@ func NewJsonRpcProcessor() *JsonRpcProcessor {
 	}
 }
 
-func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, response rpcResponser, metype MethodType) error {
+func newResponser(out io.Writer, metype MethodType) rpcResponser {
+	switch metype {
+	case RPCMethod:
+		return newRPCResponse(out)
+	case StreamingMethodLegacy:
+		return &legacyStreamingResponse{raw: out}
+	case StreamingMethod:
+		return newStreamingResponse(out, 0)
+	default:
+		log.Crit("Unknown method type", "type", metype)
+		panic("Unexpected method type")
+	}
+}
+
+func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, responseX io.Writer, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
+
+	// Create default responser
+	response := newResponser(responseX, metype)
+
+	defer response.Close()
 
 	if err := jsonDecoder.Decode(&request); err != nil {
 		nilInterface := interface{}(nil)
@@ -342,7 +379,11 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		}
 		return err
 	}
-
+	if request.Jsonrpc == JsonRPCversion20s && metype == StreamingMethodLegacy {
+		log.Info("Upgrading streaming protocol")
+		metype = StreamingMethod
+		response = newResponser(responseX, metype)
+	}
 	response.SetID(request.ID)
 
 	if !request.isValid() {
@@ -359,6 +400,13 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	}
 	// now check is requested type is supported
 	m, okm := ms[metype]
+	if !okm {
+		// We colud have added this method as legacy
+		// For now leave this as "compat"
+		if metype == StreamingMethod {
+			m, okm = ms[StreamingMethodLegacy]
+		}
+	}
 	if !okm {
 		log.Error("required type for method not found", "type", metype, "method", request.Method)
 		response.SetResponseError(MethodNotFoundError)
@@ -397,7 +445,9 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		case io.Reader:
 			_, err := io.Copy(response, result)
 			if err != nil && err != io.EOF {
-				if err == io.ErrUnexpectedEOF {
+				if err == LimitExceed {
+					// We can bypass limiter now
+					response.Writer(responseX)
 					log.Error("stream copy failed", "err", "limit", "method", request.Method)
 				} else {
 					log.Error("stream copy failed", "method", request.Method, "err", err)
@@ -422,23 +472,8 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 
 // Process : Parse and process request from data
 func (p *JsonRpcProcessor) Process(data io.Reader, response io.Writer, ctx interface{}, metype MethodType) error {
-	var rpcResponser rpcResponser
 	kontext := context.Background()
 	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
 
-	switch metype {
-	case RPCMethod:
-		rpcResponser = newRPCResponse(response)
-	case StreamingMethodLegacy:
-		rpcResponser = &legacyStreamingResponse{raw: response}
-	case StreamingMethod:
-		rpcResponser = newStreamingResponse(response, 0)
-	default:
-		log.Crit("Unknown method type", "type", metype)
-		panic("Unexpected method type")
-	}
-
-	defer rpcResponser.Close()
-
-	return p.processWrapper(kontext, data, rpcResponser, metype)
+	return p.processWrapper(kontext, data, response, metype)
 }

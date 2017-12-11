@@ -73,13 +73,7 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		rpcOperationMode = rupicolarpc.RPCMethod
 	} else if r.RequestURI == s.parent.config.Protocol.URI.Streamed {
 		context.isRPC = false
-		streamingVersion := r.Header.Get("RupicolaStreamingVersion")
-		switch streamingVersion {
-		case "", "1":
-			rpcOperationMode = rupicolarpc.StreamingMethodLegacy
-		case "2":
-			rpcOperationMode = rupicolarpc.StreamingMethod
-		}
+		rpcOperationMode = rupicolarpc.StreamingMethodLegacy
 	} else {
 		return
 	}
