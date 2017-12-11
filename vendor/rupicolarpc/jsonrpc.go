@@ -440,6 +440,9 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 			masterError = err
 			return
 		}
+		if closer, ok := result.(io.Closer); ok {
+			defer closer.Close()
+		}
 		//TODO: Use limiter here not in method implementation
 		// Rpc method could return reader and inside use routine to provide endless stream of data
 		// to prevent this we are using same exec context and previously set timeout
@@ -448,12 +451,11 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 			for {
 				select {
 				case <-ctx.Done():
-					if closer, ok := result.(io.Closer); ok {
-						closer.Close()
-					}
 					response.SetResponseError(TimeoutError)
 					return
 				default:
+					// Copy atmost defaultChunkSize - required for proper timeout handling
+					_, err := io.Copy(response, result)
 					if err == io.EOF {
 						// End of stream, nothing to do
 						return
