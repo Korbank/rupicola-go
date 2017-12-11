@@ -454,7 +454,6 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 					response.SetResponseError(TimeoutError)
 					return
 				default:
-					// Copy atmost defaultChunkSize - required for proper timeout handling
 					_, err := io.Copy(response, result)
 					if err == io.EOF {
 						// End of stream, nothing to do
