@@ -224,6 +224,7 @@ func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if err := unmarshal(&parsed); err != nil {
 		return err
 	}
+	parsed.ExecTimeout *= time.Millisecond
 	*l = MethodLimits(parsed)
 
 	return nil
