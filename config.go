@@ -88,7 +88,7 @@ type MethodDef struct {
 		Exec  string
 		Delay time.Duration
 		Args  []methodArgs
-		RunAs RunAs `yaml:",omitempty"`
+		RunAs RunAs `yaml:"run-as,omitempty"`
 	} `yaml:"invoke"`
 	// Pointer because we need to know when its unsed
 	Limits *MethodLimits
