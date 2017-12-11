@@ -103,6 +103,7 @@ type streamingResponse struct {
 	id         *interface{}
 	chunkSize  int
 	firstWrite bool
+	isClosed   bool
 }
 
 func newStreamingResponse(writer io.Writer, n int) rpcResponser {
@@ -130,11 +131,11 @@ func (b *streamingResponse) Close() (err error) {
 	if err = b.commit(); err != nil {
 		return
 	}
-	if b.enc != nil {
+	if !b.isClosed {
 		// Write footer (if we got error somewhere its alrady send)
 		err = b.SetResponseResult("Done")
 	}
-	b.enc = nil
+	b.isClosed = true
 	return
 }
 func (b *streamingResponse) commit() (err error) {
@@ -145,7 +146,12 @@ func (b *streamingResponse) commit() (err error) {
 		Data interface{} `json:"data"`
 		ID   interface{} `json:"id,omitempty"`
 	}
-	resp.Data = b.buffer.Bytes()
+	if b.chunkSize <= 0 {
+		resp.Data = b.buffer.String()
+	} else {
+		resp.Data = b.buffer.Bytes()
+	}
+
 	resp.ID = b.id
 	err = b.enc.Encode(resp)
 	b.buffer.Reset()
@@ -157,8 +163,11 @@ func (b *streamingResponse) SetID(id *interface{}) {
 }
 
 func (b *streamingResponse) Write(p []byte) (n int, err error) {
+	if b.isClosed {
+		return 0, io.EOF
+	}
 	n = 0
-	if b.enc == nil {
+	if b.isClosed {
 		log.Warn("Write disabled on closed response")
 		return 0, io.EOF
 	}
@@ -255,17 +264,18 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 }
 
 func (b *streamingResponse) SetResponseError(e error) (err error) {
-	if b.enc != nil {
+	if !b.isClosed {
 		if err = b.commit(); err != nil {
 			return
 		}
+		// Force close flag, to prevent sending "DONE" after error
+		b.isClosed = true
 		err = b.enc.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
 		defer b.Close()
 		if err != nil {
 			log.Debug("Unable to send error information", "err", err)
 			return
 		}
-		b.enc = nil
 		return b.Close()
 	}
 	log.Warn("Setting error more than once!")
@@ -273,7 +283,7 @@ func (b *streamingResponse) SetResponseError(e error) (err error) {
 }
 
 func (b *streamingResponse) SetResponseResult(r interface{}) error {
-	if b.enc == nil {
+	if b.isClosed {
 		log.Warn("Unable to set result on closed response")
 		return nil
 	}

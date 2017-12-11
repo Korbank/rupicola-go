@@ -366,8 +366,6 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	// Create default responser
 	response := newResponser(responseX, metype)
 
-	defer response.Close()
-
 	if err := jsonDecoder.Decode(&request); err != nil {
 		nilInterface := interface{}(nil)
 		response.SetID(&nilInterface)
@@ -377,6 +375,8 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		default:
 			response.SetResponseError(InvalidRequestError)
 		}
+		// Now close response
+		response.Close()
 		return err
 	}
 	if request.Jsonrpc == JsonRPCversion20s && metype == StreamingMethodLegacy {
@@ -384,6 +384,8 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		metype = StreamingMethod
 		response = newResponser(responseX, metype)
 	}
+
+	defer response.Close()
 	response.SetID(request.ID)
 
 	if !request.isValid() {
@@ -443,30 +445,43 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		// to prevent this we are using same exec context and previously set timeout
 		switch result := result.(type) {
 		case io.Reader:
-			_, err := io.Copy(response, result)
-			if err != nil && err != io.EOF {
-				if err == LimitExceed {
-					// We can bypass limiter now
-					response.Writer(responseX)
-					log.Error("stream copy failed", "err", "limit", "method", request.Method)
-				} else {
-					log.Error("stream copy failed", "method", request.Method, "err", err)
+			for {
+				select {
+				case <-ctx.Done():
+					if closer, ok := result.(io.Closer); ok {
+						closer.Close()
+					}
+					response.SetResponseError(TimeoutError)
+					return
+				default:
+					if err == io.EOF {
+						// End of stream, nothing to do
+						return
+					}
+					if err != nil {
+						if err == LimitExceed {
+							// We can bypass limiter now
+							response.Writer(responseX)
+							log.Error("stream copy failed", "err", "limit", "method", request.Method)
+						} else {
+							log.Error("stream copy failed", "method", request.Method, "err", err)
+						}
+						response.SetResponseError(err)
+						masterError = err
+						return
+					}
 				}
-				response.SetResponseError(err)
-				masterError = err
 			}
 		default:
 			masterError = response.SetResponseResult(result)
 		}
 	}()
 
+	// Wait only for done - cheking for context lead to nasty bugs
+	// created from race condition
 	select {
 	case <-done:
-	case <-ctx.Done():
-		response.SetResponseError(TimeoutError)
-		masterError = TimeoutError
 	}
-
 	return masterError
 }
 
