@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -48,6 +49,7 @@ type rupicolaProcessorChild struct {
 
 func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
+	defer r.Body.Close()
 	// Accept only POST
 	if r.Method != "POST" {
 		log.Warn("not allowed", "method", r.Method)
@@ -166,7 +168,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		m.logger.Error("Unable to start process", "err", err)
 		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
 	}
-
+	// We also have net.Pipe
 	pr, pw := io.Pipe()
 	writer := io.Writer(pw)
 	reader := io.ReadCloser(pr)
@@ -319,21 +321,36 @@ func main() {
 		mux.Handle(configuration.Protocol.URI.RPC, &child)
 		mux.Handle(configuration.Protocol.URI.Streamed, &child)
 
-		srv := &http.Server{Addr: bind.Address + ":" + strconv.Itoa(int(bind.Port)), Handler: mux}
-
-		if configuration.Limits.ReadTimeout > 0 {
-			srv.ReadTimeout = configuration.Limits.ReadTimeout * time.Millisecond
+		srv := &http.Server{
+			Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
+			Handler:     mux,
+			ReadTimeout: configuration.Limits.ReadTimeout,
+			IdleTimeout: configuration.Limits.ReadTimeout,
 		}
 
 		go func() {
 			switch bind.Type {
 			case HTTP:
 				log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
-				failureChannel <- srv.ListenAndServe()
+				ln, err := ListenKeepAlive("tcp", srv.Addr)
+				if err != nil {
+					failureChannel <- err
+					return
+				}
+				failureChannel <- srv.Serve(ln)
 
 			case HTTPS:
+				srv.TLSConfig = &tls.Config{
+					MinVersion:               tls.VersionTLS12,
+					PreferServerCipherSuites: true,
+				}
 				log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
-				failureChannel <- srv.ListenAndServeTLS(bind.Cert, bind.Key)
+				ln, err := ListenKeepAlive("tcp", srv.Addr)
+				if err != nil {
+					failureChannel <- err
+					return
+				}
+				failureChannel <- srv.ServeTLS(ln, bind.Cert, bind.Key)
 
 			case Unix:
 				//todo: check
