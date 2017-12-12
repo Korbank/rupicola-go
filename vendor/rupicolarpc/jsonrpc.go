@@ -362,7 +362,8 @@ func newResponser(out io.Writer, metype MethodType) rpcResponser {
 func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, responseX io.Writer, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
-
+	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
+	// We should just check if any write success
 	// Create default responser
 	response := newResponser(responseX, metype)
 
@@ -379,6 +380,11 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		response.Close()
 		return err
 	}
+	if closer, ok := data.(io.Closer); ok {
+		log.Debug("Closing body")
+		closer.Close()
+	}
+
 	if request.Jsonrpc == JsonRPCversion20s && metype == StreamingMethodLegacy {
 		log.Info("Upgrading streaming protocol")
 		metype = StreamingMethod
