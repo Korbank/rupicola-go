@@ -460,8 +460,10 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 					response.SetResponseError(TimeoutError)
 					return
 				default:
-					_, err := io.Copy(response, result)
-					if err == io.EOF {
+					n, err := io.Copy(response, result)
+					// This is from spec, Copy never return err = nill
+					// just n = 0 and err = nil
+					if n == 0 && err == nil {
 						// End of stream, nothing to do
 						return
 					}

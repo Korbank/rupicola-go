@@ -135,7 +135,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		buffer.Reset()
 	}
 
-	m.logger.Debug("prepared method invocation", "args", appArguments)
+	m.logger.Debug("prepared method invocation", "exec", m.InvokeInfo.Exec, "args", appArguments)
 	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
 
 	// Make it "better"
@@ -188,12 +188,11 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 
 		_, err := io.Copy(writer, stdout)
 		if err != nil {
-			if err := process.Process.Kill(); err != nil {
-				log.Error("Sending kill failed", "err", err)
-			}
-
 			if err != io.EOF {
 				m.logger.Error("error reading from pipe", "err", err)
+				if err := process.Process.Kill(); err != nil {
+					log.Error("Sending kill failed", "err", err)
+				}
 			} else {
 				m.logger.Debug("reading from pipe finished")
 			}
