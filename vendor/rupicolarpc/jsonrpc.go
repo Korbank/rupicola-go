@@ -1,13 +1,14 @@
 package rupicolarpc
 
-import log "github.com/inconshreveable/log15"
-import "encoding/json"
-import "io"
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"strconv"
+	"time"
 
-import "strconv"
-
-import "time"
-import "context"
+	log "github.com/inconshreveable/log15"
+)
 
 // ContextKey : Supported keys in context
 type ContextKey int
@@ -420,14 +421,26 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		response.SetResponseError(MethodNotFoundError)
 		return MethodNotFoundError
 	}
-
-	if m.limits.MaxResponse != 0 {
-		response.Writer(ExceptionalLimitWrite(response.GetWriter(), int64(m.limits.MaxResponse)))
+	if m.MaxResponse != 0 {
+		response.Writer(ExceptionalLimitWrite(response.GetWriter(), int64(m.MaxResponse)))
 	}
 
-	timeout := m.limits.ExecTimeout
+	timeout := p.limits[metype].ExecTimeout
+	if timeout != 0 {
+		//We have some global timeout
+		//So check if method is time-bound too
+		//if no just use global timeout
+		//otherwise select lower value
+		if m.ExecTimeout != 0 && m.ExecTimeout < timeout {
+			timeout = m.ExecTimeout
+
+		}
+	} else {
+		// No global limit so use from method
+		timeout = m.ExecTimeout
+	}
 	if timeout > 0 {
-		log.Crit("Exec", "t", timeout)
+		log.Debug("Seting time limit for method", "timeout", timeout)
 		kontext, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		ctx = kontext
@@ -489,6 +502,9 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	// Wait only for done - cheking for context lead to nasty bugs
 	// created from race condition
 	select {
+	case <-ctx.Done():
+		response.SetResponseError(TimeoutError)
+		masterError = TimeoutError
 	case <-done:
 	}
 	return masterError
