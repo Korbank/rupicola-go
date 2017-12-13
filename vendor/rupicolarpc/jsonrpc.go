@@ -260,7 +260,10 @@ type ExceptionalLimitedWriter struct {
 
 // ExceptionalLimitWrite construct from reader
 func ExceptionalLimitWrite(r io.Writer, n int64) io.Writer {
-	return &ExceptionalLimitedWriter{r, n}
+	if n > 0 {
+		return &ExceptionalLimitedWriter{r, n}
+	}
+	return r
 }
 
 // Write implement io.Writer
@@ -421,9 +424,8 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		response.SetResponseError(MethodNotFoundError)
 		return MethodNotFoundError
 	}
-	if m.MaxResponse != 0 {
-		response.Writer(ExceptionalLimitWrite(response.GetWriter(), int64(m.MaxResponse)))
-	}
+
+	response.MaxResponse(int64(m.MaxResponse))
 
 	timeout := p.limits[metype].ExecTimeout
 	if timeout != 0 {
@@ -483,7 +485,7 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 					if err != nil {
 						if err == LimitExceed {
 							// We can bypass limiter now
-							response.Writer(responseX)
+							response.MaxResponse(0)
 							log.Error("stream copy failed", "err", "limit", "method", request.Method)
 						} else {
 							log.Error("stream copy failed", "method", request.Method, "err", err)
@@ -496,6 +498,10 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 			}
 		default:
 			masterError = response.SetResponseResult(result)
+			if masterError != nil {
+				response.MaxResponse(0)
+				response.SetResponseError(masterError)
+			}
 		}
 	}()
 
@@ -507,7 +513,11 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		masterError = TimeoutError
 	case <-done:
 	}
-	return masterError
+
+	if masterError != nil {
+		return masterError
+	}
+	return response.Close()
 }
 
 // Process : Parse and process request from data

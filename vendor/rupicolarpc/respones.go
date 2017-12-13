@@ -10,38 +10,48 @@ import (
 )
 
 type rpcResponse struct {
-	dst       *json.Encoder
-	raw       io.Writer
-	id        *interface{}
-	writeUsed bool
-	buffer    *bytes.Buffer
+	dst            *json.Encoder
+	raw            io.Writer
+	limiter        io.Writer
+	id             *interface{}
+	explicitStatus bool
+	buffer         *bytes.Buffer
+	maxResponse    int64
 }
 type rpcResponser interface {
 	io.WriteCloser
 	SetID(*interface{})
 	SetResponseResult(interface{}) error
 	SetResponseError(error) error
-	GetWriter() io.Writer
-	Writer(io.Writer)
+	/*GetWriter() io.Writer
+	Writer(io.Writer)*/
+	MaxResponse(int64)
 }
 
 func newRPCResponse(w io.Writer) rpcResponser {
 	buffer := bytes.NewBuffer(nil)
 	return &rpcResponse{
-		dst:       json.NewEncoder(buffer),
-		raw:       w,
-		writeUsed: false,
-		buffer:    buffer,
+		dst:            json.NewEncoder(buffer),
+		raw:            w,
+		explicitStatus: false,
+		buffer:         buffer,
+		limiter:        buffer,
 	}
 }
 
+func (b *rpcResponse) MaxResponse(max int64) {
+	b.limiter = ExceptionalLimitWrite(b.buffer, max)
+	b.dst = json.NewEncoder(b.limiter)
+}
+
+/*
 func (b *rpcResponse) GetWriter() io.Writer {
 	return b.raw
 }
 
 func (b *rpcResponse) Writer(w io.Writer) {
 	b.raw = w
-}
+}*/
 
 func (b *rpcResponse) Close() error {
 	defer func() {
@@ -50,11 +60,15 @@ func (b *rpcResponse) Close() error {
 		b.raw = nil
 	}()
 	if b.buffer != nil {
-		if b.writeUsed {
-			if err := b.SetResponseResult(b.buffer.String()); err != nil {
+		if !b.explicitStatus {
+			strContent := b.buffer.String()
+			b.buffer.Reset()
+			if err := b.SetResponseResult(strContent); err != nil {
 				return err
 			}
 		}
+		// Using raw - all other operations are on limited buffer
+		// so at this point we are under limit
 		n, err := io.Copy(b.raw, b.buffer)
 		if err != nil {
 			log.Debug("close RpcResponse", "n", n, "err", err)
@@ -71,33 +85,38 @@ func (b *rpcResponse) SetID(id *interface{}) {
 	b.id = id
 }
 func (b *rpcResponse) Write(p []byte) (int, error) {
-	if b.buffer != nil {
-		b.writeUsed = true
-		return b.buffer.Write(p)
+	if !b.explicitStatus {
+		return b.limiter.Write(p)
 	}
 	return 0, io.ErrUnexpectedEOF
 }
 
 func (b *rpcResponse) SetResponseError(e error) error {
-	b.writeUsed = false
-	b.buffer.Reset()
-	if b.id != nil {
-		return b.dst.Encode(NewError(e, b.id))
+
+	// Allow only when no data was written before
+	if b.buffer.Len() == 0 {
+		b.explicitStatus = true
+		if b.id != nil {
+			return b.dst.Encode(NewError(e, b.id))
+		}
 	}
 	return nil
 }
 
 func (b *rpcResponse) SetResponseResult(result interface{}) error {
-	b.writeUsed = false
-	b.buffer.Reset()
-	if b.id != nil {
-		return b.dst.Encode(NewResult(result, b.id))
+
+	if b.buffer.Len() == 0 {
+		b.explicitStatus = true
+		if b.id != nil {
+			return b.dst.Encode(NewResult(result, b.id))
+		}
 	}
 	return nil
 }
 
 type streamingResponse struct {
 	raw        io.Writer
+	limited    io.Writer
 	buffer     *bytes.Buffer
 	enc        *json.Encoder
 	id         *interface{}
@@ -109,15 +128,21 @@ type streamingResponse struct {
 func newStreamingResponse(writer io.Writer, n int) rpcResponser {
 	result := &streamingResponse{
 		raw:        writer,
+		limited:    writer,
 		buffer:     bytes.NewBuffer(make([]byte, 0, 128)),
 		enc:        json.NewEncoder(writer),
 		chunkSize:  n,
 		firstWrite: true,
 	}
-	result.Writer(writer)
 	return result
 }
 
+func (b *streamingResponse) MaxResponse(max int64) {
+	b.limited = ExceptionalLimitWrite(b.raw, max)
+	b.enc = json.NewEncoder(b.limited)
+}
+
+/*
 func (b *streamingResponse) GetWriter() io.Writer {
 	return b.raw
 }
@@ -125,7 +150,7 @@ func (b *streamingResponse) GetWriter() io.Writer {
 func (b *streamingResponse) Writer(w io.Writer) {
 	b.raw = w
 	b.enc = json.NewEncoder(b.raw)
-}
+}*/
 
 func (b *streamingResponse) Close() (err error) {
 	if err = b.commit(); err != nil {
@@ -294,9 +319,15 @@ func (b *streamingResponse) SetResponseResult(r interface{}) error {
 }
 
 type legacyStreamingResponse struct {
-	raw io.Writer
+	raw     io.Writer
+	limiter io.Writer
 }
 
+func newLegacyStreamingResponse(out io.Writer) rpcResponser {
+	return &legacyStreamingResponse{out, out}
+}
+
+/*
 func (b *legacyStreamingResponse) GetWriter() io.Writer {
 	return b.raw
 }
@@ -304,9 +335,10 @@ func (b *legacyStreamingResponse) GetWriter() io.Writer {
 func (b *legacyStreamingResponse) Writer(w io.Writer) {
 	b.raw = w
 }
-
+*/
 func (b *legacyStreamingResponse) Close() error {
 	b.raw = nil
+	b.limiter = nil
 	return nil
 }
 
@@ -315,7 +347,7 @@ func (b *legacyStreamingResponse) SetID(id *interface{}) {
 }
 
 func (b *legacyStreamingResponse) Write(p []byte) (int, error) {
-	return b.raw.Write(p)
+	return b.limiter.Write(p)
 }
 
 func (b *legacyStreamingResponse) SetResponseError(e error) error {
@@ -333,4 +365,8 @@ func (b *legacyStreamingResponse) SetResponseResult(result interface{}) (err err
 	// And thats it
 	b.raw = nil
 	return
+}
+
+func (b *legacyStreamingResponse) MaxResponse(max int64) {
+	b.limiter = ExceptionalLimitWrite(b.raw, max)
 }

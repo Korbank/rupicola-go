@@ -9,6 +9,42 @@ import (
 	"time"
 )
 
+func TestMaxSize(t *testing.T) {
+	types := []MethodType{RPCMethod, StreamingMethodLegacy, StreamingMethod}
+	requestString := []string{
+		`{"jsonrpc":"2.0", "method": "method", "params":{"stream":true}, "id":0}`,
+		`{"jsonrpc":"2.0", "method": "method", "params":{"stream":false}, "id":0}`,
+	}
+	responseString := map[MethodType]string{
+		RPCMethod:             `{"jsonrpc":"2.0","error":{"code":-32098,"message":"Limit Exceed"},"id":0}`,
+		StreamingMethodLegacy: ``,
+		StreamingMethod:       `{"jsonrpc":"2.0+s","error":{"code":-32098,"message":"Limit Exceed"},"id":0}`,
+	}
+
+	rpc := NewJsonRpcProcessor()
+	for _, metype := range types {
+		rpc.AddMethodFunc("method", metype,
+			func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+				stream := in.Params["stream"].(bool)
+				response := strings.Repeat("x", 40)
+				if stream {
+					return strings.NewReader(response), nil
+				}
+				return response, nil
+			}).MaxSize(10)
+		for _, req := range requestString {
+			response := bytes.NewBuffer(nil)
+			err := rpc.Process(strings.NewReader(req), response, nil, metype)
+			if err != LimitExceed {
+				t.Fatalf("%v %v %v", metype, req, err)
+			}
+
+			if strings.TrimSpace(response.String()) != responseString[metype] {
+				t.Fatalf("%v %v - %v", metype, response, responseString[metype])
+			}
+		}
+	}
+}
 func TestMethodNotFound(t *testing.T) {
 	requestString := `{"jsonrpc":"2.0", "method": "unknown-method", "params":{}, "id":0}`
 	responseString := `{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":0}` + "\n"
