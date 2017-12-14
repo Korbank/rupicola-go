@@ -363,6 +363,19 @@ func newResponser(out io.Writer, metype MethodType) rpcResponser {
 	}
 }
 
+var (
+	nilInterface = interface{}(nil)
+)
+
+func changeProtocolIfRequired(responser rpcResponser, request JsonRpcRequest, metype MethodType) rpcResponser {
+	if request.Jsonrpc == JsonRPCversion20s && metype == StreamingMethodLegacy {
+		log.Info("Upgrading streaming protocol")
+		metype = StreamingMethod
+		return newResponser(responser.Writer(), metype)
+	}
+	return responser
+}
+
 func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, responseX io.Writer, metype MethodType) error {
 	jsonDecoder := json.NewDecoder(data)
 	var request JsonRpcRequest
@@ -371,9 +384,15 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 	// Create default responser
 	response := newResponser(responseX, metype)
 
-	if err := jsonDecoder.Decode(&request); err != nil {
-		nilInterface := interface{}(nil)
+	// For now disallow chained jsons
+	if err := jsonDecoder.Decode(&request); err != nil || jsonDecoder.More() {
 		response.SetID(&nilInterface)
+		if err == nil {
+			log.Warn("Request contains more data. This is currently disallowed")
+			err = InvalidRequestError
+			// "upgrade" if required
+			response = changeProtocolIfRequired(response, request, metype)
+		}
 		switch err.(type) {
 		case *json.SyntaxError:
 			response.SetResponseError(ParseErrorError)
@@ -389,11 +408,7 @@ func (p *JsonRpcProcessor) processWrapper(ctx context.Context, data io.Reader, r
 		closer.Close()
 	}
 
-	if request.Jsonrpc == JsonRPCversion20s && metype == StreamingMethodLegacy {
-		log.Info("Upgrading streaming protocol")
-		metype = StreamingMethod
-		response = newResponser(responseX, metype)
-	}
+	response = changeProtocolIfRequired(response, request, metype)
 
 	defer response.Close()
 	response.SetID(request.ID)

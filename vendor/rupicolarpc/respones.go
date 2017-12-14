@@ -23,8 +23,7 @@ type rpcResponser interface {
 	SetID(*interface{})
 	SetResponseResult(interface{}) error
 	SetResponseError(error) error
-	/*GetWriter() io.Writer
-	Writer(io.Writer)*/
+	Writer() io.Writer
 	MaxResponse(int64)
 }
 
@@ -44,14 +43,9 @@ func (b *rpcResponse) MaxResponse(max int64) {
 	b.dst = json.NewEncoder(b.limiter)
 }
 
-/*
-func (b *rpcResponse) GetWriter() io.Writer {
+func (b *rpcResponse) Writer() io.Writer {
 	return b.raw
 }
-
-func (b *rpcResponse) Writer(w io.Writer) {
-	b.raw = w
-}*/
 
 func (b *rpcResponse) Close() error {
 	defer func() {
@@ -114,6 +108,9 @@ func (b *rpcResponse) SetResponseResult(result interface{}) error {
 	return nil
 }
 
+//TODO: How do we handle empty id?
+//Disallow? in rpc it's "notification"
+//but for stream... pointless
 type streamingResponse struct {
 	raw        io.Writer
 	limited    io.Writer
@@ -142,15 +139,9 @@ func (b *streamingResponse) MaxResponse(max int64) {
 	b.enc = json.NewEncoder(b.limited)
 }
 
-/*
-func (b *streamingResponse) GetWriter() io.Writer {
+func (b *streamingResponse) Writer() io.Writer {
 	return b.raw
 }
-
-func (b *streamingResponse) Writer(w io.Writer) {
-	b.raw = w
-	b.enc = json.NewEncoder(b.raw)
-}*/
 
 func (b *streamingResponse) Close() (err error) {
 	if err = b.commit(); err != nil {
@@ -168,8 +159,8 @@ func (b *streamingResponse) commit() (err error) {
 		return
 	}
 	var resp struct {
-		Data interface{} `json:"data"`
-		ID   interface{} `json:"id,omitempty"`
+		Data interface{}  `json:"data"`
+		ID   *interface{} `json:"id,omitempty"`
 	}
 	if b.chunkSize <= 0 {
 		resp.Data = b.buffer.String()
@@ -204,8 +195,8 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 		}
 	}
 	var resp struct {
-		Data interface{} `json:"data"`
-		ID   interface{} `json:"id,omitempty"`
+		Data interface{}  `json:"data"`
+		ID   *interface{} `json:"id,omitempty"`
 	}
 	resp.ID = b.id
 	//TODO: Can we do better?
@@ -327,15 +318,10 @@ func newLegacyStreamingResponse(out io.Writer) rpcResponser {
 	return &legacyStreamingResponse{out, out}
 }
 
-/*
-func (b *legacyStreamingResponse) GetWriter() io.Writer {
+func (b *legacyStreamingResponse) Writer() io.Writer {
 	return b.raw
 }
 
-func (b *legacyStreamingResponse) Writer(w io.Writer) {
-	b.raw = w
-}
-*/
 func (b *legacyStreamingResponse) Close() error {
 	b.raw = nil
 	b.limiter = nil
