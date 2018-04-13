@@ -1,31 +1,24 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
-	"io"
-	"log/syslog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
-	"time"
 
 	"rupicolarpc"
 
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/pflag"
 )
 
 var (
 	rpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
 )
+
+type rpcMethod *MethodDef
 
 type cmdEx *exec.Cmd
 
@@ -42,11 +35,53 @@ type rupicolaProcessor struct {
 	processor *rupicolarpc.JsonRpcProcessor
 	config    *RupicolaConfig
 }
+
 type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
 	bind   *Bind
+	mux    *http.ServeMux
 }
 
+// Start listening (this exits only on failure)
+func (child *rupicolaProcessorChild) listen() error {
+	return child.bind.Bind(child.mux, child.parent.config.Limits)
+}
+
+// Create separate context for given bind point (required for concurrent listening)
+func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
+	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux()}
+	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
+	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
+	return child
+}
+
+func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
+	rupicolaProcessor := &rupicolaProcessor{
+		config:    conf,
+		limits:    conf.Limits,
+		processor: rupicolarpc.NewJsonRpcProcessor()}
+
+	for k, v := range conf.Methods {
+		var metype rupicolarpc.MethodType
+		if v.Streamed {
+			metype = rupicolarpc.StreamingMethodLegacy
+		} else {
+			metype = rupicolarpc.RPCMethod
+		}
+
+		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+
+		if v.Limits.ExecTimeout >= 0 {
+			method.ExecutionTimeout(v.Limits.ExecTimeout)
+		}
+		if v.Limits.MaxResponse >= 0 {
+			method.MaxSize(uint(v.Limits.MaxResponse))
+		}
+	}
+	return rupicolaProcessor
+}
+
+// ServeHTTP is implementation of http interface
 func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
 	defer r.Body.Close()
@@ -99,123 +134,7 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
-	uncastedContext := ctx.Value(rupicolarpc.RupicalaContextKeyContext)
-	var ok bool
-	var castedContext *rupicolaRPCContext
-	if uncastedContext != nil {
-		castedContext, ok = uncastedContext.(*rupicolaRPCContext)
-	}
-	if ok {
-		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
-			castedContext.shouldRequestAuth = true
-			log.Warn("Unauthorized")
-			return nil, nil, rpcUnauthorizedError
-		}
-	} else {
-		log.Crit("Provided context is not pointer")
-		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
-	}
-
-	if err := m.CheckParams(&req); err != nil {
-		return nil, nil, err
-	}
-
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
-	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg.evalueateArgs(req.Params, buffer)
-		if err != nil {
-			log.Error("error", "err", err)
-			return nil, nil, err
-		}
-		if !skip {
-			appArguments = append(appArguments, buffer.String())
-		}
-		buffer.Reset()
-	}
-
-	m.logger.Debug("prepared method invocation", "exec", m.InvokeInfo.Exec, "args", appArguments)
-	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
-
-	// Make it "better"
-	SetUserGroup(process, m)
-
-	stdin, err := process.StdinPipe()
-	if err == nil {
-		stdin.Close()
-	} else {
-		m.logger.Error("stdin", "err", err)
-		return nil, nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdin")
-	}
-
-	return castedContext, process, nil
-}
-
-// Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
-	// We can cancel or set deadline for current context (only shorter - default no limit)
-	_, process, err := m.prepareCommand(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := process.StdoutPipe()
-	if err != nil {
-		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
-	}
-	err = process.Start()
-	if err != nil {
-		m.logger.Error("Unable to start process", "err", err)
-		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
-	}
-	// We also have net.Pipe
-	pr, pw := io.Pipe()
-	writer := io.Writer(pw)
-	reader := io.ReadCloser(pr)
-
-	if m.Encoding == Base64 {
-		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
-		// should we defer, or err check?
-		defer writerEncoder.Close()
-		writer = writerEncoder
-	}
-
-	go func() {
-		defer pw.Close()
-
-		time.Sleep(m.InvokeInfo.Delay)
-		m.logger.Debug("Read loop started")
-
-		_, err := io.Copy(writer, stdout)
-		if err != nil {
-			if err != io.EOF {
-				m.logger.Error("error reading from pipe", "err", err)
-				if err := process.Process.Kill(); err != nil {
-					log.Error("Sending kill failed", "err", err)
-				}
-			} else {
-				m.logger.Debug("reading from pipe finished")
-			}
-			pw.CloseWithError(err)
-		}
-
-		log.Debug("Waiting for clean exit")
-		if err := process.Wait(); err != nil {
-			log.Error("Waiting for close process failed", "err", err)
-		} else {
-			log.Debug("Done")
-		}
-	}()
-	// TODO: Check thys
-	if m.InvokeInfo.Delay != 0 {
-		pw.Close()
-		// for "delayed" execution we cannot provide meaningful data
-		return "OK", nil
-	}
-	return reader, nil
-}
-
-func registerCleanup(config *RupicolaConfig) {
+func registerCleanupAtExit(config *RupicolaConfig) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
 	go func(c chan os.Signal) {
@@ -239,142 +158,41 @@ func registerCleanup(config *RupicolaConfig) {
 }
 
 func main() {
-	configPath := pflag.String("config", "", "Specify directory or config file")
-	pflag.Parse()
+	configPath := poorString("config", "", "Specify directory or config file")
+	poorParse()
 	if *configPath == "" {
-		pflag.Usage()
+		poorUsage()
 		os.Exit(1)
 	}
-	configuration, err := ParseConfig(*configPath)
+
+	configuration, err := ReadConfig(*configPath)
+
 	if err != nil {
 		log.Crit("Unable to parse config", "err", err)
 		os.Exit(1)
 	}
+
 	if len(configuration.Methods) == 0 {
 		log.Crit("No method defined in config")
 		os.Exit(1)
 	}
+
 	if len(configuration.Protocol.Bind) == 0 {
 		log.Crit("No valid bind points")
 		os.Exit(1)
 	}
-	var logLevel log.Lvl
-	switch configuration.Log.LogLevel {
-	case LLError:
-		logLevel = log.LvlError
-	case LLWarn:
-		logLevel = log.LvlWarn
-	case LLInfo:
-		logLevel = log.LvlInfo
-	case LLDebug:
-		fallthrough
-	case LLTrace:
-		logLevel = log.LvlDebug
-	case LLOff:
-		logLevel = -1
-	}
-	var handler log.Handler
-	switch configuration.Log.Backend {
-	case BackendStdout:
-		handler = log.StdoutHandler
-	case BackendSyslog:
-		h, err := log.SyslogNetHandler("", configuration.Log.Path, syslog.LOG_DAEMON, "rupicola", log.JsonFormat())
-		if err != nil {
-			log.Error("Syslog connection failed", "err", err)
-			os.Exit(1)
-		}
-		handler = h
-	}
-	log.Root().SetHandler(log.LvlFilterHandler(logLevel, handler))
-	registerCleanup(configuration)
 
-	rupicolaProcessor := rupicolaProcessor{
-		config:    configuration,
-		limits:    configuration.Limits,
-		processor: rupicolarpc.NewJsonRpcProcessor()}
+	configuration.SetLogging()
 
-	for k, v := range configuration.Methods {
-		var metype rupicolarpc.MethodType
-		if v.Streamed {
-			metype = rupicolarpc.StreamingMethodLegacy
-		} else {
-			metype = rupicolarpc.RPCMethod
-		}
-		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+	registerCleanupAtExit(configuration)
 
-		if v.Limits.ExecTimeout >= 0 {
-			method.ExecutionTimeout(v.Limits.ExecTimeout)
-		}
-		if v.Limits.MaxResponse >= 0 {
-			method.MaxSize(uint(v.Limits.MaxResponse))
-		}
-
-	}
+	rupicolaProcessor := newRupicolaProcessorFromConfig(configuration)
 
 	failureChannel := make(chan error)
 	for _, bind := range configuration.Protocol.Bind {
-		// create local variable bind
-		bind := bind
-		child := rupicolaProcessorChild{&rupicolaProcessor, bind}
-		mux := http.NewServeMux()
-		mux.Handle(configuration.Protocol.URI.RPC, &child)
-		mux.Handle(configuration.Protocol.URI.Streamed, &child)
-
-		srv := &http.Server{
-			Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
-			Handler:     mux,
-			ReadTimeout: configuration.Limits.ReadTimeout,
-			IdleTimeout: configuration.Limits.ReadTimeout,
-		}
-
+		child := rupicolaProcessor.spawnChild(bind)
 		go func() {
-			switch bind.Type {
-			case HTTP:
-				log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
-				ln, err := ListenKeepAlive("tcp", srv.Addr)
-				if err != nil {
-					failureChannel <- err
-					return
-				}
-				failureChannel <- srv.Serve(ln)
-
-			case HTTPS:
-				srv.TLSConfig = &tls.Config{
-					MinVersion:               tls.VersionTLS12,
-					PreferServerCipherSuites: true,
-				}
-				log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
-				ln, err := ListenKeepAlive("tcp", srv.Addr)
-				if err != nil {
-					failureChannel <- err
-					return
-				}
-				failureChannel <- srv.ServeTLS(ln, bind.Cert, bind.Key)
-
-			case Unix:
-				//todo: check
-				log.Info("atarting listener", "type", "unix", "address", bind.Address)
-				srv.Addr = bind.Address
-
-				// Change umask to ensure socker is created with right
-				// permissions (at this point no other IO opeations are running)
-				// and then restore previous umask
-				oldmask := syscall.Umask(int(bind.Mode) ^ 0777)
-				ln, err := net.Listen("unix", bind.Address)
-				syscall.Umask(oldmask)
-
-				if err != nil {
-					failureChannel <- err
-				} else {
-					defer ln.Close()
-					if err := os.Chown(bind.Address, *bind.UID, *bind.GID); err != nil {
-						log.Crit("Setting permission failed", "address", bind.Address, "uid", *bind.UID, "gid", *bind.GID)
-						failureChannel <- err
-						return
-					}
-					failureChannel <- srv.Serve(ln)
-				}
-			}
+			failureChannel <- child.listen()
 		}()
 	}
 

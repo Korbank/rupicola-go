@@ -34,23 +34,40 @@ type methodLimits struct {
 	MaxResponse int64         `yaml:"max-response,omitempty"`
 }
 
+// MethodLimits define execution limits for method
 type MethodLimits methodLimits
+
+// LogLevel describe logging level
 type LogLevel int8
+
+// Backend define log backend
 type Backend int8
 
 const (
+	// BackendStdout write to stdout
 	BackendStdout = 1 << iota
+	// BackendSyslog write to syslog
 	BackendSyslog = 1 << iota
 )
+
 const (
+	// LLOff Disable log
 	LLOff LogLevel = iota
-	LLTrace
+
+	// // LLTrace most detailed log level (same as LLDebug)
+	// LLTrace
+
+	// LLDebug most detailed log level (same as LLTrace)
 	LLDebug
+	// LLInfo only info and above
 	LLInfo
+	// LLWarn only warning or errors
 	LLWarn
+	// LLError only errors
 	LLError
 )
 
+// LogDef holds logging definitions
 type LogDef struct {
 	Backend
 	LogLevel
@@ -176,6 +193,7 @@ type Protocol struct {
 	}
 }
 
+// UnmarshalYAML is unmarshaling from yaml for LogDef
 func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var logLevel struct {
 		Level   string
@@ -200,7 +218,7 @@ func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	case "off":
 		ll.LogLevel = LLOff
 	case "trace":
-		ll.LogLevel = LLTrace
+		ll.LogLevel = LLDebug
 	case "debug":
 		ll.LogLevel = LLDebug
 	case "info":
@@ -215,6 +233,7 @@ func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+// UnmarshalYAML yaml deserialization for MethodLimits
 func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	// This should just work, not be fast
 	var parsed methodLimits
@@ -390,6 +409,8 @@ func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
 			return err
 		}
 
+		// TODO: For the love of... kill this monstrocity
+
 		if konfig.Methods != nil && conf.Methods == nil {
 			conf.Methods = make(map[string]*MethodDef)
 		}
@@ -410,6 +431,18 @@ func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
 		// If anything is change in AuthBasic - replace current definition
 		if konfig.Protocol.AuthBasic.Login != "" {
 			conf.Protocol.AuthBasic = konfig.Protocol.AuthBasic
+		}
+
+		if konfig.Log.Backend != 0 {
+			conf.Log.Backend = konfig.Log.Backend
+		}
+
+		if konfig.Log.LogLevel != 0 {
+			conf.Log.LogLevel = konfig.Log.LogLevel
+		}
+
+		if konfig.Log.Path != "" {
+			conf.Log.Path = konfig.Log.Path
 		}
 	}
 	return nil
@@ -487,14 +520,15 @@ func shamefullFileModeFix(inout *os.FileMode) error {
 	return nil
 }
 
-// ParseConfig from file
-func ParseConfig(configFilePath string) (*RupicolaConfig, error) {
+// ReadConfig from file
+func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	cfg := NewConfig()
 	err := cfg.readConfig(configFilePath, true)
 
 	if err != nil {
 		return cfg, err
 	}
+
 	for k, v := range cfg.Methods {
 		v.logger = log.New("method", k)
 		v.logger.Debug("method info", "streamed", v.Streamed)
@@ -622,4 +656,34 @@ func (m *methodArgs) evalueateArgs(arguments map[string]interface{}, output *byt
 	}
 
 	return false, nil
+}
+
+// SetLogging to expected values
+func (conf *RupicolaConfig) SetLogging() {
+	var logLevel log.Lvl
+	switch conf.Log.LogLevel {
+	case LLError:
+		logLevel = log.LvlError
+	case LLWarn:
+		logLevel = log.LvlWarn
+	case LLInfo:
+		logLevel = log.LvlInfo
+	case LLDebug:
+		logLevel = log.LvlDebug
+	case LLOff:
+		logLevel = -1
+	}
+	var handler log.Handler
+	switch conf.Log.Backend {
+	case BackendStdout:
+		handler = log.StdoutHandler
+	case BackendSyslog:
+		h, err := configureSyslog(conf.Log.Path)
+		if err != nil {
+			log.Error("Syslog connection failed", "err", err)
+			os.Exit(1)
+		}
+		handler = h
+	}
+	log.Root().SetHandler(log.LvlFilterHandler(logLevel, handler))
 }

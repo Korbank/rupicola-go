@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/tls"
+	"errors"
 	"net"
+	"net/http"
+	"os"
+	"strconv"
 	"time"
+
+	log "github.com/inconshreveable/log15"
 )
 
 const (
@@ -26,8 +33,9 @@ type tcpKeepAliveListener struct {
 	*net.TCPListener
 }
 
-// Accept are OS specific
+// Accepts are OS specific
 
+// ListenKeepAlive start listening with KeepAlive active
 func ListenKeepAlive(network, address string) (ln net.Listener, err error) {
 	ln, err = net.Listen(network, address)
 	if err != nil {
@@ -38,4 +46,59 @@ func ListenKeepAlive(network, address string) (ln net.Listener, err error) {
 		ln = tcpKeepAliveListener{casted}
 	}
 	return
+}
+
+// Bind to interface and Start listening using provided mux and limits
+func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
+	srv := &http.Server{
+		Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
+		Handler:     mux,
+		ReadTimeout: limits.ReadTimeout,
+		IdleTimeout: limits.ReadTimeout,
+	}
+
+	switch bind.Type {
+	case HTTP:
+		log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
+		ln, err := ListenKeepAlive("tcp", srv.Addr)
+		if err != nil {
+			return err
+		}
+		return srv.Serve(ln)
+
+	case HTTPS:
+		srv.TLSConfig = &tls.Config{
+			MinVersion:               tls.VersionTLS12,
+			PreferServerCipherSuites: true,
+		}
+		log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
+		ln, err := ListenKeepAlive("tcp", srv.Addr)
+		if err != nil {
+			return err
+		}
+		return srv.ServeTLS(ln, bind.Cert, bind.Key)
+
+	case Unix:
+		//todo: check
+		log.Info("atarting listener", "type", "unix", "address", bind.Address)
+		srv.Addr = bind.Address
+		// Change umask to ensure socker is created with right
+		// permissions (at this point no other IO opeations are running)
+		// and then restore previous umask
+		oldmask := myUmask(int(bind.Mode) ^ 0777)
+		ln, err := net.Listen("unix", bind.Address)
+		myUmask(oldmask)
+
+		if err != nil {
+			return err
+		}
+
+		defer ln.Close()
+		if err := os.Chown(bind.Address, *bind.UID, *bind.GID); err != nil {
+			log.Crit("Setting permission failed", "address", bind.Address, "uid", *bind.UID, "gid", *bind.GID)
+			return err
+		}
+		return srv.Serve(ln)
+	}
+	return errors.New("Unknown case")
 }

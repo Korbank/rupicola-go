@@ -38,3 +38,7 @@ func SetUserGroup(process *exec.Cmd, m *MethodDef) {
 		NoSetGroups: true,
 	}
 }
+
+func myUmask(mask int) int {
+	return syscall.Umask(mask)
+}

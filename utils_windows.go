@@ -20,10 +20,14 @@ func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	return &writeWithGuard{con}, nil
+	return &writeWithGuard{c}, nil
 }
 
 // SetUserGroup sets group and user for process (not working on windows)
 func SetUserGroup(process *exec.Cmd, m *MethodDef) {
 	m.logger.Warn("windows doesn't support uid/guid")
+}
+
+func myUmask(mask int) int {
+	return mask
 }
