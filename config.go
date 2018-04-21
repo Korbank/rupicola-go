@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
+
 	log "github.com/inconshreveable/log15"
 
 	"crypto/subtle"
@@ -370,7 +372,7 @@ func (m *methodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
 	if conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
-		passOk, _ := pwVerify(password, conf.Protocol.AuthBasic.Password)
+		passOk, _ := pwhash.Verify(password, conf.Protocol.AuthBasic.Password)
 		loginOk := subtle.ConstantTimeCompare([]byte(login), []byte(conf.Protocol.AuthBasic.Login)) == 1
 		return passOk && loginOk
 	}

@@ -1,4 +1,4 @@
-package main
+package pwhash
 
 import "testing"
 
@@ -10,7 +10,7 @@ var (
 )
 
 func Test1(t *testing.T) {
-	isOk, err := pwVerify(password1, hashWithSalt1)
+	isOk, err := Verify(password1, hashWithSalt1)
 	if err != nil && isOk {
 		t.Fail()
 	}
@@ -20,7 +20,7 @@ func Test1(t *testing.T) {
 }
 
 func Test2(t *testing.T) {
-	isOk, err := pwVerify(password1, hashWithSalt2)
+	isOk, err := Verify(password1, hashWithSalt2)
 	if err != nil && isOk {
 		t.Fail()
 	}

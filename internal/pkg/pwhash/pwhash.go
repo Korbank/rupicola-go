@@ -1,13 +1,14 @@
-package main
+package pwhash
 
 import "crypto/md5"
 import "strings"
 import "fmt"
 import "crypto/subtle"
 
+// Verify if given password match hash
 // for now only md5 crypt is supported
 // __`$1$`__*`{salt}`*__$__*`{checksum}`*, where:
-func pwVerify(password string, hashWithSalt string) (bool, error) {
+func Verify(password string, hashWithSalt string) (bool, error) {
 	chunks := strings.Split(hashWithSalt, "$")
 	var computedHash string
 	var hash string
