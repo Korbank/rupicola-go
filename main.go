@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"syscall"
-
 	"rupicolarpc"
+	"syscall"
 
 	log "github.com/inconshreveable/log15"
 )
@@ -81,16 +80,39 @@ func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
 	return rupicolaProcessor
 }
 
+type wonkyJSONRPCrequest struct {
+	err error
+	r   *http.Request
+	m   rupicolarpc.MethodType
+}
+
+func (w *wonkyJSONRPCrequest) Len() int64 {
+	return w.r.ContentLength
+}
+
+func (w *wonkyJSONRPCrequest) OutputMode() rupicolarpc.MethodType {
+	return rupicolarpc.RPCMethod
+}
+
+func (w *wonkyJSONRPCrequest) Reader() (io.ReadCloser, error) {
+	if w.err != nil {
+		return nil, w.err
+	}
+	return w.r.Body, nil
+}
+
 // ServeHTTP is implementation of http interface
 func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
 	defer r.Body.Close()
-	// Accept only POST
+
+	// Accept only POST [this is corrent transport level error]
 	if r.Method != "POST" {
 		log.Warn("not allowed", "method", r.Method)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+
 	// Check for "payload size". According to spec
 	// Payload = 0 mean ignore
 	if s.parent.limits.PayloadSize > 0 && r.ContentLength > int64(s.parent.limits.PayloadSize) {
@@ -98,18 +120,19 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		log.Warn("request too big")
 		return
 	}
-
-	var rpcOperationMode rupicolarpc.MethodType
+	wonkyRequest := &wonkyJSONRPCrequest{r: r}
+	rpcOperationMode := &wonkyRequest.m
 
 	var context rupicolaRPCContext
 	context.parent = s.parent
 	if r.RequestURI == s.parent.config.Protocol.URI.RPC {
 		context.isRPC = true
-		rpcOperationMode = rupicolarpc.RPCMethod
+		*rpcOperationMode = rupicolarpc.RPCMethod
 	} else if r.RequestURI == s.parent.config.Protocol.URI.Streamed {
 		context.isRPC = false
-		rpcOperationMode = rupicolarpc.StreamingMethodLegacy
+		*rpcOperationMode = rupicolarpc.StreamingMethodLegacy
 	} else {
+		log.Warn("Unrecognized URI", "uri", r.RequestURI)
 		return
 	}
 
@@ -122,16 +145,10 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		context.allowPrivate = s.bind.AllowPrivate
 	}
 
-	// Don't like this hack... we should not use this outside framework...
 	if !context.isAuthorized && !context.allowPrivate {
-		err := json.NewEncoder(w).Encode(rupicolarpc.NewError(rpcUnauthorizedError, nil))
-		if err != nil {
-			log.Crit("unknown error", "err", err)
-			panic(err)
-		}
-	} else {
-		s.parent.processor.Process(r.Body, w, &context, rpcOperationMode)
+		wonkyRequest.err = rpcUnauthorizedError
 	}
+	s.parent.processor.Process(wonkyRequest, w, &context)
 }
 
 func registerCleanupAtExit(config *RupicolaConfig) {
