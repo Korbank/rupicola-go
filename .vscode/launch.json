@@ -17,6 +17,10 @@
                 "env": {"GOPATH":"/home/nfinity/go"},
                 "args": ["--config","/home/nfinity/git/rupicola/examples/go.yaml"]
             },
+            "windows": {
+                "env": {"GOPATH":"D:/golocal/go"},
+                "args": ["--config","D:\\golocal\\go\\src\\bitbucket.org\\kociolek\\rupicola-ng\\sample.conf"]
+            },
             "showLog": false,
             "stopOnEntry": false,
             "preLaunchTask": "Remove rupicola socket"

@@ -8,49 +8,28 @@ import (
 )
 
 type legacyStreamingResponse struct {
-	raw     io.Writer
-	limiter io.Writer
+	baseResponse
 }
 
 func newLegacyStreamingResponse(out io.Writer) rpcResponser {
-	return &legacyStreamingResponse{out, out}
-}
-
-func (b *legacyStreamingResponse) Writer() io.Writer {
-	return b.raw
-}
-
-func (b *legacyStreamingResponse) Close() error {
-	b.raw = nil
-	b.limiter = nil
-	return nil
-}
-
-func (b *legacyStreamingResponse) SetID(id *interface{}) {
-	log.Debug("SetId unused for Legacy streaming")
-}
-
-func (b *legacyStreamingResponse) Write(p []byte) (int, error) {
-	return b.limiter.Write(p)
+	return &legacyStreamingResponse{newBaseResponse(out, ExceptionalLimitWrite(out, -1))}
 }
 
 func (b *legacyStreamingResponse) SetResponseError(e error) error {
-	log.Debug("SetResponseError unused for Legacy streaming")
+	log.Debug("SetResponseError unused for Legacy streaming", "error", e)
 	return nil
 }
 
 func (b *legacyStreamingResponse) SetResponseResult(result interface{}) (err error) {
+	// we should ot get reader ever here
 	switch converted := result.(type) {
 	case string, int, int16, int32, int64, int8:
 		_, err = io.WriteString(b, fmt.Sprintf("%v", converted))
 	default:
 		log.Crit("Unknown input result", "result", result)
 	}
-	// And thats it
-	b.raw = nil
+	if err != nil {
+		b.SetResponseError(err)
+	}
 	return
-}
-
-func (b *legacyStreamingResponse) MaxResponse(max int64) {
-	b.limiter = ExceptionalLimitWrite(b.raw, max)
 }

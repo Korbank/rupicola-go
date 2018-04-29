@@ -102,3 +102,14 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 	}
 	return errors.New("Unknown case")
 }
+
+type failureReader struct {
+	error
+}
+
+func (f *failureReader) Close() error {
+	return f
+}
+func (f *failureReader) Read([]byte) (int, error) {
+	return 0, f
+}

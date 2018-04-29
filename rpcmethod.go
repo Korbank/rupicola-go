@@ -66,20 +66,23 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 }
 
 // Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
+func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, out rupicolarpc.PublicRpcResponser) {
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	_, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
-		return nil, err
+		out.SetResponseError(err)
+		return
 	}
 	stdout, err := process.StdoutPipe()
 	if err != nil {
-		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
+		out.SetResponseError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout"))
+		return
 	}
 	err = process.Start()
 	if err != nil {
 		m.logger.Error("Unable to start process", "err", err)
-		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
+		out.SetResponseError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err))
+		return
 	}
 	// We also have net.Pipe
 	pr, pw := io.Pipe()
@@ -123,7 +126,8 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	if m.InvokeInfo.Delay != 0 {
 		pw.Close()
 		// for "delayed" execution we cannot provide meaningful data
-		return "OK", nil
+		out.SetResponseResult("OK")
+		return
 	}
-	return reader, nil
+	out.SetResponseResult(reader)
 }

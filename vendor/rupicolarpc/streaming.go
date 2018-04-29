@@ -13,7 +13,7 @@ import (
 //but for stream... pointless
 type streamingResponse struct {
 	raw        io.Writer
-	limited    io.Writer
+	limited    LimitedWriter
 	buffer     *bytes.Buffer
 	enc        *json.Encoder
 	id         *interface{}
@@ -23,11 +23,12 @@ type streamingResponse struct {
 }
 
 func newStreamingResponse(writer io.Writer, n int) rpcResponser {
+	limited := ExceptionalLimitWrite(writer, 0)
 	result := &streamingResponse{
 		raw:        writer,
-		limited:    writer,
+		limited:    limited,
 		buffer:     bytes.NewBuffer(make([]byte, 0, 128)),
-		enc:        json.NewEncoder(writer),
+		enc:        json.NewEncoder(limited),
 		chunkSize:  n,
 		firstWrite: true,
 	}
@@ -35,8 +36,7 @@ func newStreamingResponse(writer io.Writer, n int) rpcResponser {
 }
 
 func (b *streamingResponse) MaxResponse(max int64) {
-	b.limited = ExceptionalLimitWrite(b.raw, max)
-	b.enc = json.NewEncoder(b.limited)
+	b.limited.SetLimit(max)
 }
 
 func (b *streamingResponse) Writer() io.Writer {
@@ -206,5 +206,6 @@ func (b *streamingResponse) SetResponseResult(r interface{}) error {
 	if err := b.commit(); err != nil {
 		return err
 	}
+	// Warning this will not be chunked, pass it through chunker?
 	return b.enc.Encode(NewResultEx(r, b.id, JsonRPCversion20s))
 }

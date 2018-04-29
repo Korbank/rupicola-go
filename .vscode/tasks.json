@@ -9,6 +9,9 @@
             "linux": {
                 "command": "rm -f /tmp/rupicolactl.sock"
             },
+            "windows": {
+                "command": ""
+            },
             "presentation": {
                 "reveal": "never"
             }

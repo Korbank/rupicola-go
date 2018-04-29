@@ -16,8 +16,8 @@ type dummyRequest struct {
 	m MethodType
 }
 
-func (d *dummyRequest) Reader() (io.ReadCloser, error) {
-	return ioutil.NopCloser(d.r), nil
+func (d *dummyRequest) Reader() io.ReadCloser {
+	return ioutil.NopCloser(d.r)
 }
 func (d *dummyRequest) OutputMode() MethodType {
 	return d.m
@@ -38,13 +38,14 @@ func TestMaxSize(t *testing.T) {
 	rpc := NewJsonRpcProcessor()
 	for _, metype := range types {
 		rpc.AddMethodFunc("method", metype,
-			func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+			func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
 				stream := in.Params["stream"].(bool)
 				response := strings.Repeat("x", 40)
 				if stream {
-					return strings.NewReader(response), nil
+					out.SetResponseResult(strings.NewReader(response))
+				} else {
+					out.SetResponseResult(response)
 				}
-				return response, nil
 			}).MaxSize(10)
 		for _, req := range requestString {
 			response := bytes.NewBuffer(nil)
@@ -122,12 +123,38 @@ func TestLegacyMethodStreaming(t *testing.T) {
 }
 
 func TestMethodStreaming(t *testing.T) {
-	requestString := `{"jsonrpc":"2.0+s", "method": "method", "params":{}, "id":0}`
+	rpc := NewJsonRpcProcessor()
+	rpc.AddMethodFunc("method", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+		return "string", nil
+	})
+	rpc.AddMethodFunc("method2", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+		return bytes.NewBufferString(strings.Repeat("string \n", 2)), nil
+	})
+
+	type args struct {
+		n int
+	}
+	tests := []struct {
+		name       string
+		args       args
+		want       rpcResponser
+		wantWriter string
+	}{
+		// TODO: Add test cases.
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := &bytes.Buffer{}
+			if gotWriter := writer.String(); gotWriter != tt.wantWriter {
+				t.Errorf("newStreamingResponse() = %v, want %v", gotWriter, tt.wantWriter)
+			}
+		})
+	}
+	requestString := `{"jsonrpc":"2.0+s", "method": "method2", "params":{}, "id":0}`
 	responseString := fmt.Sprint(`{"jsonrpc":"2.0+s","result":"string","id":0}`, "\n",
 		`{"jsonrpc":"2.0+s","result":"Done","id":0}`, "\n")
 	response := bytes.NewBuffer(nil)
-	rpc := NewJsonRpcProcessor()
-	rpc.AddMethodFunc("method", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return "string", nil })
+
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response, nil)
 	if err != nil {
 		t.Fail()
@@ -174,7 +201,9 @@ func TestMethodRpcError(t *testing.T) {
 	responseError := errors.New("string")
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
-	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
+	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
+		out.SetResponseError(responseError)
+	})
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
 	if err != responseError {
 		t.Fail()
@@ -191,10 +220,10 @@ func TestMethodRpcTimeout(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.ExecutionTimeout(RPCMethod, 20*time.Millisecond)
-	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
+	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
 		time.Sleep(200 * time.Millisecond)
 		t.Fail()
-		return nil, responseError
+		out.SetResponseError(responseError)
 	})
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
 	if err != ErrTimeout {
@@ -255,16 +284,16 @@ func TestRFC(t *testing.T) {
 	}
 
 	testCases := []testCase{
-		//	testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}`, `{"jsonrpc":"2.0","result":19,"id":1}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}`, `{"jsonrpc":"2.0","result":-19,"id":2}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}`, `{"jsonrpc":"2.0","result":19,"id":3}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}`, `{"jsonrpc":"2.0","result":19,"id":4}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}`, ``},
-		//	testCase{`{"jsonrpc": "2.0", "method": "foobar"}`, ``},
-		//	testCase{`{"jsonrpc": "2.0", "method": "foobar", "id": "1"}`, `{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":"1"}`},
+		testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}`, `{"jsonrpc":"2.0","result":19,"id":1}`},
+		testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": [23, 42], "id": 2}`, `{"jsonrpc":"2.0","result":-19,"id":2}`},
+		testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3}`, `{"jsonrpc":"2.0","result":19,"id":3}`},
+		testCase{`{"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4}`, `{"jsonrpc":"2.0","result":19,"id":4}`},
+		testCase{`{"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]}`, ``},
+		testCase{`{"jsonrpc": "2.0", "method": "foobar"}`, ``},
+		testCase{`{"jsonrpc": "2.0", "method": "foobar", "id": "1"}`, `{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":"1"}`},
 		testCase{`{"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz]`, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": 1, "params": "bar"}`, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`},
-		//	testCase{`{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":1}{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":2}`, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`},
+		testCase{`{"jsonrpc": "2.0", "method": 1, "params": "bar"}`, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`},
+		testCase{`{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":1}{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":2}`, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`},
 	}
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("subtract", RPCMethod, func(in JsonRpcRequest, _ interface{}) (interface{}, error) {
@@ -282,44 +311,10 @@ func TestRFC(t *testing.T) {
 		response := bytes.NewBuffer(nil)
 		err := rpc.Process(&dummyRequest{strings.NewReader(v.request), RPCMethod}, response, nil)
 		if v.response != strings.TrimSpace(response.String()) {
-			t.Fatalf("Failed [%d] %s %s:%s", i, v.response, response.String(), err)
+			t.Fatalf("Failed [%d] %s %s:%s", i+1, v.response, response.String(), err)
 		}
 	}
 	/*
-		-->
-		<--
-
-		-->
-		<--
-
-		rpc call with named parameters:
-
-		-->
-		<--
-
-		-->
-		<--
-
-		a Notification:
-
-		-->
-		-->
-
-		rpc call of non-existent method:
-
-		-->
-		<--
-
-		rpc call with invalid JSON:
-
-		-->
-		<--
-
-		rpc call with invalid Request object:
-
-		-->
-		<--
-
 		rpc call Batch, invalid JSON:
 
 		--> [

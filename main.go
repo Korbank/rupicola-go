@@ -91,14 +91,14 @@ func (w *wonkyJSONRPCrequest) Len() int64 {
 }
 
 func (w *wonkyJSONRPCrequest) OutputMode() rupicolarpc.MethodType {
-	return rupicolarpc.RPCMethod
+	return w.m
 }
 
-func (w *wonkyJSONRPCrequest) Reader() (io.ReadCloser, error) {
+func (w *wonkyJSONRPCrequest) Reader() io.ReadCloser {
 	if w.err != nil {
-		return nil, w.err
+		return &failureReader{w.err}
 	}
-	return w.r.Body, nil
+	return w.r.Body
 }
 
 // ServeHTTP is implementation of http interface
