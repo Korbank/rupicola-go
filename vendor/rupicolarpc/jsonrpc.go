@@ -332,16 +332,32 @@ type limits struct {
 	MaxResponse uint
 }
 
-type JsonRpcProcessor struct {
+type JsonRpcProcessor interface {
+	AddMethod(name string, metype MethodType, action Invoker) *methodDef
+	AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef
+	AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef
+	AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef
+	Process(request RequestDefinition, response io.Writer, ctx interface{}) error
+	ExecutionTimeout(metype MethodType, timeout time.Duration)
+}
+
+type jsonRpcProcessorPriv interface {
+	JsonRpcProcessor
+	limit(MethodType) limits
+	method(string, MethodType) (*methodDef, error)
+}
+
+type jsonRpcProcessor struct {
 	methods map[string]map[MethodType]*methodDef
 	limits  map[MethodType]*limits
 }
 
 // AddMethod add method
-func (p *JsonRpcProcessor) AddMethod(name string, metype MethodType, action Invoker) *methodDef {
+func (p *jsonRpcProcessor) AddMethod(name string, metype MethodType, action Invoker) *methodDef {
 	return p.AddMethodNew(name, metype, &OldToNew{action})
 }
-func (p *JsonRpcProcessor) AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef {
+
+func (p *jsonRpcProcessor) AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef {
 	container, ok := p.methods[name]
 	if !ok {
 		container = make(map[MethodType]*methodDef)
@@ -357,25 +373,25 @@ func (p *JsonRpcProcessor) AddMethodNew(name string, metype MethodType, action N
 }
 
 // AddMethodFunc add method as func
-func (p *JsonRpcProcessor) AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef {
+func (p *jsonRpcProcessor) AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef {
 	return p.AddMethod(name, metype, action)
 }
 
-func (p *JsonRpcProcessor) AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef {
+func (p *jsonRpcProcessor) AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef {
 	return p.AddMethodNew(name, metype, action)
 }
 
-func (p *JsonRpcProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
+func (p *jsonRpcProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
 	p.limits[metype].ExecTimeout = timeout
 }
 
 // NewJsonRpcProcessor create new json rpc processor
-func NewJsonRpcProcessor() *JsonRpcProcessor {
+func NewJsonRpcProcessor() JsonRpcProcessor {
 	copyRPCLimits := defaultRPCLimits
 	copyStreamingLimits := defaultStreamingLimits
 	copyStreamingLegacyLimits := defaultStreamingLimits
 
-	return &JsonRpcProcessor{
+	return &jsonRpcProcessor{
 		methods: make(map[string]map[MethodType]*methodDef),
 		limits: map[MethodType]*limits{
 			RPCMethod:             &copyRPCLimits,
@@ -431,24 +447,21 @@ func (r *JsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
 	return
 }
 
-type jsonRpcProcessor interface {
-	limit(MethodType) limits
-	method(string, MethodType) (*methodDef, error)
-}
-
 type jsonRPCrequest struct {
 	JsonRpcRequest
 	ctx context.Context
 	rpcResponserPriv
 	err  error
 	req  RequestDefinition
-	p    jsonRpcProcessor
+	p    jsonRpcProcessorPriv
 	done chan struct{}
+	log  log.Logger
 }
 
 func (f *jsonRPCrequest) readFromTransport() error {
 	r := f.req.Reader()
 	_, f.err = f.JsonRpcRequest.ReadFrom(r)
+	f.log = log.New("method", f.Method)
 	r.Close()
 	return f.err
 }
@@ -509,7 +522,7 @@ func (f *jsonRPCrequest) process() error {
 		timeout = m.ExecTimeout
 	}
 	if timeout > 0 {
-		log.Debug("Seting time limit for method", "timeout", timeout)
+		f.log.Debug("Seting time limit for method", "timeout", timeout)
 		kontext, cancel := context.WithTimeout(f.ctx, timeout)
 		defer cancel()
 		f.ctx = kontext
@@ -519,57 +532,75 @@ func (f *jsonRPCrequest) process() error {
 		defer close(f.done)
 		m.Invoke(f.ctx, f.JsonRpcRequest, f)
 	}()
-	// Wait only for done - cheking for context lead to nasty bugs
-	// created from race condition
+	// 1) Timeout or we done
 	select {
 	case <-f.ctx.Done():
-		log.Info("method timed out", "method", f.Method)
+		f.log.Info("method timed out", "method", f.Method)
 		f.err = ErrTimeout
 	case <-f.done:
+	}
+	// 2) If we exit from timeout wait for ending
+	if f.err == ErrTimeout {
+		select {
+		// This is just to ensure we won't hang forever if procedure
+		// is misbehaving
+		case <-time.NewTimer(time.Millisecond * 500).C:
+			f.log.Warn("procedure didn't exit gracefuly, forcing exit")
+		case <-f.done:
+		}
 	}
 	return f.err
 }
 
 // SetResponseError saves passed error
-func (b *jsonRPCrequest) SetResponseError(errs error) error {
-	// should we keep original error or overwrite it with response?
-	b.err = errs
-	if err := b.rpcResponserPriv.SetResponseError(errs); err != nil {
-		log.Warn("error while setting error response", "error", err)
+func (f *jsonRPCrequest) SetResponseError(errs error) error {
+	if f.ctx.Err() == context.DeadlineExceeded {
+		f.log.Warn("trying to set error after deadline", "error", errs)
+	} else {
+		// should we keep original error or overwrite it with response?
+		f.err = errs
+		if err := f.rpcResponserPriv.SetResponseError(errs); err != nil {
+			f.log.Warn("error while setting error response", "error", err)
+		}
 	}
-	return b.err
+	return f.err
 }
 
 // SetResponseResult handle Reader case
-func (b *jsonRPCrequest) SetResponseResult(result interface{}) error {
+func (f *jsonRPCrequest) SetResponseResult(result interface{}) error {
+	if f.ctx.Err() == context.DeadlineExceeded {
+		f.log.Warn("trying to set result after deadline")
+		return f.err
+	}
+
 	switch converted := result.(type) {
 	case io.Reader:
-		if closer, ok := result.(io.Closer); ok {
-			// if this is closer method we want to close it
-			// at the end or after timeout
-			go func() {
-				select {
-				case <-b.ctx.Done():
-				case <-b.done:
-					log.Debug("Done from b.done")
-				}
-				closer.Close()
-			}()
-			//defer func() { log.Debug("Executing close"); closer.Close() }()
-		}
-		// do we even need that loop?
-		_, b.err = io.Copy(b.rpcResponserPriv, converted)
-		if b.err != nil {
-			log.Error("stream copy failed", "method", b.Method, "err", b.err)
+		// TODO: Should we care?
+		//if closer, ok := result.(io.Closer); ok {
+		//	// if this is closer method we want to close it
+		//	// at the end or after timeout
+		//	go func() {
+		//		select {
+		//		case <-b.ctx.Done():
+		//		case <-b.done:
+		//			log.Debug("Done from b.done")
+		//		}
+		//		closer.Close()
+		//	}()
+		//	//defer func() { log.Debug("Executing close"); closer.Close() }()
+		//}
+		_, f.err = io.Copy(f.rpcResponserPriv, converted)
+		if f.err != nil {
+			f.log.Error("stream copy failed", "method", f.Method, "err", f.err)
 		}
 	default:
-		b.err = b.rpcResponserPriv.SetResponseResult(result)
+		f.err = f.rpcResponserPriv.SetResponseResult(result)
 	}
 	// Errors (if any) are set on Close
-	return b.err
+	return f.err
 }
 
-func (p *JsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequest {
+func (p *jsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequest {
 	jsonRequest := jsonRPCrequest{
 		ctx:              context,
 		req:              request,
@@ -581,12 +612,12 @@ func (p *JsonRpcProcessor) spawnRequest(context context.Context, request Request
 }
 
 // limit for given type
-func (p *JsonRpcProcessor) limit(metype MethodType) limits {
+func (p *jsonRpcProcessor) limit(metype MethodType) limits {
 	return *p.limits[metype]
 }
 
 // method for given name
-func (p *JsonRpcProcessor) method(name string, metype MethodType) (*methodDef, error) {
+func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, error) {
 	// check if method with given name exists
 	ms, okm := p.methods[name]
 	if !okm {
@@ -611,7 +642,7 @@ func (p *JsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 }
 
 // Process : Parse and process request from data
-func (p *JsonRpcProcessor) Process(request RequestDefinition, response io.Writer, ctx interface{}) error {
+func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer, ctx interface{}) error {
 	kontext := context.Background()
 	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!

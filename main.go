@@ -31,7 +31,7 @@ type rupicolaRPCContext struct {
 
 type rupicolaProcessor struct {
 	limits    Limits
-	processor *rupicolarpc.JsonRpcProcessor
+	processor rupicolarpc.JsonRpcProcessor
 	config    *RupicolaConfig
 }
 
