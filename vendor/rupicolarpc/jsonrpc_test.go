@@ -37,8 +37,8 @@ func TestMaxSize(t *testing.T) {
 
 	rpc := NewJsonRpcProcessor()
 	for _, metype := range types {
-		rpc.AddMethodFunc("method", metype,
-			func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
+		rpc.AddMethodFuncNew("method", metype,
+			func(in JsonRpcRequest, context interface{}, out RPCResponser) {
 				stream := in.Params["stream"].(bool)
 				response := strings.Repeat("x", 40)
 				if stream {
@@ -137,7 +137,7 @@ func TestMethodStreaming(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       args
-		want       rpcResponser
+		want       rpcResponserPriv
 		wantWriter string
 	}{
 		// TODO: Add test cases.
@@ -150,7 +150,7 @@ func TestMethodStreaming(t *testing.T) {
 			}
 		})
 	}
-	requestString := `{"jsonrpc":"2.0+s", "method": "method2", "params":{}, "id":0}`
+	requestString := `{"jsonrpc":"2.0+s", "method": "method", "params":{}, "id":0}`
 	responseString := fmt.Sprint(`{"jsonrpc":"2.0+s","result":"string","id":0}`, "\n",
 		`{"jsonrpc":"2.0+s","result":"Done","id":0}`, "\n")
 	response := bytes.NewBuffer(nil)
@@ -160,7 +160,7 @@ func TestMethodStreaming(t *testing.T) {
 		t.Fail()
 	}
 	if response.String() != responseString {
-		t.Error("\n", response, "\n", responseString)
+		t.Error("\n response\n", response, "\nrequired\n", responseString)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestLegacyMethodStreamingError(t *testing.T) {
 	rpc.AddMethodFunc("method", StreamingMethodLegacy, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response, nil)
 	if err != responseError {
-		t.Fail()
+		t.Error(err, responseError)
 	}
 	if response.String() != responseString {
 		t.Error("\n", response, "\n", responseString)
@@ -201,7 +201,7 @@ func TestMethodRpcError(t *testing.T) {
 	responseError := errors.New("string")
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
-	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
+	rpc.AddMethodFuncNew("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out RPCResponser) {
 		out.SetResponseError(responseError)
 	})
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
@@ -220,15 +220,13 @@ func TestMethodRpcTimeout(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.ExecutionTimeout(RPCMethod, 20*time.Millisecond)
-	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out PublicRpcResponser) {
+	rpc.AddMethodFuncNew("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out RPCResponser) {
 		time.Sleep(200 * time.Millisecond)
-		t.Fail()
 		out.SetResponseError(responseError)
 	})
 	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
 	if err != ErrTimeout {
-		t.Log(err)
-		t.Fail()
+		t.Error(err)
 	}
 	if response.String() != responseString {
 		t.Error("\n", response, "\n", responseString)
@@ -293,7 +291,7 @@ func TestRFC(t *testing.T) {
 		testCase{`{"jsonrpc": "2.0", "method": "foobar", "id": "1"}`, `{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":"1"}`},
 		testCase{`{"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz]`, `{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null}`},
 		testCase{`{"jsonrpc": "2.0", "method": 1, "params": "bar"}`, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`},
-		testCase{`{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":1}{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":2}`, `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":null}`},
+		testCase{`{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":1}{"jsonrpc": "2.0", "method": "foobar", "params": [1], "id":2}`, `{"jsonrpc":"2.0","error":{"code":-32097,"message":"Batch is disabled"},"id":null}`},
 	}
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("subtract", RPCMethod, func(in JsonRpcRequest, _ interface{}) (interface{}, error) {
