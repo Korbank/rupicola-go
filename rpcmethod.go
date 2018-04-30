@@ -71,7 +71,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 		// We don't want close app when we reach panic inside this goroutine
 		if r := recover(); r != nil {
 			if err, ok := r.(error); ok {
-				log.Warn("error from recovery", "error", err)
+				m.logger.Warn("error from recovery", "error", err)
 			}
 		}
 	}()
@@ -89,7 +89,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 	}
 	err = process.Start()
 	if err != nil {
-		m.logger.Error("Unable to start process", "err", err)
+		m.logger.Error("unable to start process", "err", err)
 		out.SetResponseError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err))
 		return
 	}
@@ -104,17 +104,16 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 		defer writerEncoder.Close()
 		writer = writerEncoder
 	}
-
 	go func() {
 		time.Sleep(m.InvokeInfo.Delay)
-		m.logger.Debug("Read loop started")
+		m.logger.Debug("read loop started")
 
 		_, err := io.Copy(writer, stdout)
 		if err != nil {
 			if err != io.EOF {
 				m.logger.Error("error reading from pipe", "err", err)
 				if err := process.Process.Kill(); err != nil {
-					log.Error("Sending kill failed", "err", err)
+					m.logger.Error("sending kill failed", "err", err)
 				}
 			} else {
 				m.logger.Debug("reading from pipe finished")
@@ -122,11 +121,11 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 			pw.CloseWithError(err)
 		}
 
-		log.Debug("Waiting for clean exit")
+		m.logger.Debug("Waiting for clean exit")
 		if err := process.Wait(); err != nil {
-			log.Error("Waiting for close process failed", "err", err)
+			m.logger.Error("Waiting for close process failed", "err", err)
 		} else {
-			log.Debug("Done")
+			m.logger.Debug("Done")
 		}
 		pw.Close()
 	}()
