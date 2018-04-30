@@ -66,7 +66,16 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 }
 
 // Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, out rupicolarpc.PublicRpcResponser) {
+func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, out rupicolarpc.RPCResponser) {
+	defer func() {
+		// We don't want close app when we reach panic inside this goroutine
+		if r := recover(); r != nil {
+			if err, ok := r.(error); ok {
+				log.Warn("error from recovery", "error", err)
+			}
+		}
+	}()
+
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	_, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
@@ -97,8 +106,6 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 	}
 
 	go func() {
-		defer pw.Close()
-
 		time.Sleep(m.InvokeInfo.Delay)
 		m.logger.Debug("Read loop started")
 
@@ -121,8 +128,9 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 		} else {
 			log.Debug("Done")
 		}
+		pw.Close()
 	}()
-	// TODO: Check thys
+
 	if m.InvokeInfo.Delay != 0 {
 		pw.Close()
 		// for "delayed" execution we cannot provide meaningful data

@@ -11,7 +11,7 @@ type legacyStreamingResponse struct {
 	baseResponse
 }
 
-func newLegacyStreamingResponse(out io.Writer) rpcResponser {
+func newLegacyStreamingResponse(out io.Writer) rpcResponserPriv {
 	return &legacyStreamingResponse{newBaseResponse(out, ExceptionalLimitWrite(out, -1))}
 }
 

@@ -68,7 +68,7 @@ func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
 			metype = rupicolarpc.RPCMethod
 		}
 
-		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+		method := rupicolaProcessor.processor.AddMethodNew(k, metype, v)
 
 		if v.Limits.ExecTimeout >= 0 {
 			method.ExecutionTimeout(v.Limits.ExecTimeout)
@@ -80,21 +80,21 @@ func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
 	return rupicolaProcessor
 }
 
-type wonkyJSONRPCrequest struct {
+type httpJSONRequest struct {
 	err error
 	r   *http.Request
 	m   rupicolarpc.MethodType
 }
 
-func (w *wonkyJSONRPCrequest) Len() int64 {
+func (w *httpJSONRequest) Len() int64 {
 	return w.r.ContentLength
 }
 
-func (w *wonkyJSONRPCrequest) OutputMode() rupicolarpc.MethodType {
+func (w *httpJSONRequest) OutputMode() rupicolarpc.MethodType {
 	return w.m
 }
 
-func (w *wonkyJSONRPCrequest) Reader() io.ReadCloser {
+func (w *httpJSONRequest) Reader() io.ReadCloser {
 	if w.err != nil {
 		return &failureReader{w.err}
 	}
@@ -120,8 +120,8 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		log.Warn("request too big")
 		return
 	}
-	wonkyRequest := &wonkyJSONRPCrequest{r: r}
-	rpcOperationMode := &wonkyRequest.m
+	request := &httpJSONRequest{r: r}
+	rpcOperationMode := &request.m
 
 	var context rupicolaRPCContext
 	context.parent = s.parent
@@ -146,15 +146,17 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !context.isAuthorized && !context.allowPrivate {
-		wonkyRequest.err = rpcUnauthorizedError
+		request.err = rpcUnauthorizedError
 	}
-	s.parent.processor.Process(wonkyRequest, w, &context)
+
+	s.parent.processor.Process(request, w, &context)
 }
 
 func registerCleanupAtExit(config *RupicolaConfig) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
 	go func(c chan os.Signal) {
+		// todo: configuration reloading
 		// Wait for a SIGINT or SIGKILL:
 		sig := <-c
 		log.Info("Caught signal: shutting down.", "signal", sig)

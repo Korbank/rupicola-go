@@ -11,15 +11,13 @@ import (
 type rpcResponse struct {
 	baseResponse
 	// data -> [JSON] -> [LIMITER] -> [BUFFER]
-	raw io.Writer // raw transport
-	//limiter        LimitedWriter // limited writer OVER buffer
-	dst *json.Encoder // encoder over limiter
-	//id             *interface{}  // id
-	dataSent bool          // blah
-	buffer   *bytes.Buffer // buffer
+	raw      io.Writer
+	dst      *json.Encoder
+	dataSent bool
+	buffer   *bytes.Buffer
 }
 
-func newRPCResponse(w io.Writer) rpcResponser {
+func newRPCResponse(w io.Writer) rpcResponserPriv {
 	buffer := bytes.NewBuffer(nil)
 	limiter := ExceptionalLimitWrite(buffer, -1)
 	return &rpcResponse{
@@ -36,13 +34,16 @@ func (b *rpcResponse) Close() error {
 		return nil
 	}
 	b.dataSent = true
-	//if !b.explicitStatus {
-	//	strContent := b.buffer.String()
-	//	b.buffer.Reset()
-	//	if err := b.SetResponseResult(strContent); err != nil {
-	//		return err
-	//	}
-	//}
+	if !b.resultSet {
+		// disable limiter
+		b.MaxResponse(0)
+		strContent := b.buffer.String()
+		b.buffer.Reset()
+		if err := b.SetResponseResult(strContent); err != nil {
+			return err
+		}
+	}
+
 	// Using raw - all other operations are on limited buffer
 	// so at this point we are under limit
 	n, err := io.Copy(b.raw, b.buffer)
@@ -67,7 +68,11 @@ func (b *rpcResponse) SetResponseError(e error) error {
 	if b.id == nil {
 		return nil
 	}
-
+	if b.resultSet {
+		log.Debug("result already set (error)")
+	}
+	b.resultSet = true
+	b.buffer.Reset()
 	return b.dst.Encode(NewError(e, b.id))
 }
 
@@ -78,6 +83,10 @@ func (b *rpcResponse) SetResponseResult(result interface{}) error {
 	if b.id == nil {
 		return nil
 	}
-
-	return b.dst.Encode(NewResult(result, b.id))
+	if b.resultSet {
+		log.Debug("result already set (result)")
+	}
+	b.resultSet = true
+	// pass through limiter
+	return b.encoder.Encode(NewResult(result, b.id))
 }

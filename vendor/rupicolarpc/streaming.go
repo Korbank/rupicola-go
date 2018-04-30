@@ -2,7 +2,6 @@ package rupicolarpc
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 
 	log "github.com/inconshreveable/log15"
@@ -12,35 +11,22 @@ import (
 //Disallow? in rpc it's "notification"
 //but for stream... pointless
 type streamingResponse struct {
-	raw        io.Writer
-	limited    LimitedWriter
+	baseResponse
 	buffer     *bytes.Buffer
-	enc        *json.Encoder
-	id         *interface{}
 	chunkSize  int
 	firstWrite bool
 	isClosed   bool
 }
 
-func newStreamingResponse(writer io.Writer, n int) rpcResponser {
+func newStreamingResponse(writer io.Writer, n int) rpcResponserPriv {
 	limited := ExceptionalLimitWrite(writer, 0)
 	result := &streamingResponse{
-		raw:        writer,
-		limited:    limited,
-		buffer:     bytes.NewBuffer(make([]byte, 0, 128)),
-		enc:        json.NewEncoder(limited),
-		chunkSize:  n,
-		firstWrite: true,
+		baseResponse: newBaseResponse(writer, limited),
+		buffer:       bytes.NewBuffer(make([]byte, 0, 128)),
+		chunkSize:    n,
+		firstWrite:   true,
 	}
 	return result
-}
-
-func (b *streamingResponse) MaxResponse(max int64) {
-	b.limited.SetLimit(max)
-}
-
-func (b *streamingResponse) Writer() io.Writer {
-	return b.raw
 }
 
 func (b *streamingResponse) Close() (err error) {
@@ -69,7 +55,7 @@ func (b *streamingResponse) commit() (err error) {
 	}
 
 	resp.ID = b.id
-	err = b.enc.Encode(resp)
+	err = b.encoder.Encode(resp)
 	b.buffer.Reset()
 	return
 }
@@ -124,7 +110,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 					b.buffer.Reset()
 				}
 				resp.Data = string(lineWithoutEnding)
-				err = b.enc.Encode(resp)
+				err = b.encoder.Encode(resp)
 				if err != nil {
 					return
 				}
@@ -159,7 +145,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 		for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
 			resp.Data = p[chunk : chunk+b.chunkSize]
 			n += b.chunkSize
-			if err = b.enc.Encode(resp); err != nil {
+			if err = b.encoder.Encode(resp); err != nil {
 				return
 			}
 		}
@@ -184,9 +170,11 @@ func (b *streamingResponse) SetResponseError(e error) (err error) {
 		if err = b.commit(); err != nil {
 			return
 		}
+		// Make unlimited writer (errors should always be written)
+		b.MaxResponse(0)
 		// Force close flag, to prevent sending "DONE" after error
 		b.isClosed = true
-		err = b.enc.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
+		err = b.encoder.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
 		defer b.Close()
 		if err != nil {
 			log.Debug("Unable to send error information", "err", err)
@@ -207,5 +195,5 @@ func (b *streamingResponse) SetResponseResult(r interface{}) error {
 		return err
 	}
 	// Warning this will not be chunked, pass it through chunker?
-	return b.enc.Encode(NewResultEx(r, b.id, JsonRPCversion20s))
+	return b.encoder.Encode(NewResultEx(r, b.id, JsonRPCversion20s))
 }
