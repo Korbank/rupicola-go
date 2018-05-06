@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"io"
 	"net"
 	"net/http"
@@ -68,7 +69,7 @@ func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
 			metype = rupicolarpc.RPCMethod
 		}
 
-		method := rupicolaProcessor.processor.AddMethodNew(k, metype, v)
+		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
 
 		if v.Limits.ExecTimeout >= 0 {
 			method.ExecutionTimeout(v.Limits.ExecTimeout)
@@ -177,10 +178,10 @@ func registerCleanupAtExit(config *RupicolaConfig) {
 }
 
 func main() {
-	configPath := poorString("config", "", "Specify directory or config file")
-	poorParse()
+	configPath := flag.String("config", "", "Specify directory or config file")
+	flag.Parse()
 	if *configPath == "" {
-		poorUsage()
+		flag.Usage()
 		os.Exit(1)
 	}
 

@@ -58,7 +58,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	if err == nil {
 		stdin.Close()
 	} else {
-		m.logger.Error("stdin", "err", err)
+		m.logger.Error("stdin", "error", err)
 		return nil, nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdin")
 	}
 
@@ -66,7 +66,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 }
 
 // Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, out rupicolarpc.RPCResponser) {
+func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
 	defer func() {
 		// We don't want close app when we reach panic inside this goroutine
 		if r := recover(); r != nil {
@@ -79,19 +79,17 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	_, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
-		out.SetResponseError(err)
-		return
+		//out.SetResponseError(err)
+		return nil, err
 	}
 	stdout, err := process.StdoutPipe()
 	if err != nil {
-		out.SetResponseError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout"))
-		return
+		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
 	}
 	err = process.Start()
 	if err != nil {
 		m.logger.Error("unable to start process", "err", err)
-		out.SetResponseError(rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err))
-		return
+		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
 	}
 	// We also have net.Pipe
 	pr, pw := io.Pipe()
@@ -133,8 +131,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest, 
 	if m.InvokeInfo.Delay != 0 {
 		pw.Close()
 		// for "delayed" execution we cannot provide meaningful data
-		out.SetResponseResult("OK")
-		return
+		return "OK", nil
 	}
-	out.SetResponseResult(reader)
+	return reader, nil
 }
