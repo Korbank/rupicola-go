@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/merger"
+
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
 
 	log "github.com/inconshreveable/log15"
@@ -78,11 +80,11 @@ type LogDef struct {
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
-	Include  []includeConfig
-	Protocol Protocol
-	Limits   Limits
-	Log      LogDef
-	Methods  map[string]*MethodDef
+	Include  []includeConfig       `merger:""`
+	Protocol Protocol              `merger:""`
+	Limits   Limits                `merger:""`
+	Log      LogDef                `merger:""`
+	Methods  map[string]*MethodDef `merger:""`
 }
 
 // MethodParam ...
@@ -405,46 +407,18 @@ func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
 			return err
 		}
 	} else {
-		konfig := new(RupicolaConfig)
+		konfig := NewConfig()
 		err := konfig.readConfig(info.Name, true)
 		if err != nil {
 			return err
 		}
 
-		// TODO: For the love of... kill this monstrocity
-
-		if konfig.Methods != nil && conf.Methods == nil {
-			conf.Methods = make(map[string]*MethodDef)
-		}
-
-		for methodName, methodDef := range konfig.Methods {
-			conf.Methods[methodName] = methodDef
-		}
-
-		conf.Protocol.Bind = append(conf.Protocol.Bind, konfig.Protocol.Bind...)
-
-		if konfig.Protocol.URI.RPC != "" {
-			conf.Protocol.URI.RPC = konfig.Protocol.URI.RPC
-		}
-		if konfig.Protocol.URI.Streamed != "" {
-			conf.Protocol.URI.Streamed = konfig.Protocol.URI.Streamed
-		}
-
-		// If anything is change in AuthBasic - replace current definition
-		if konfig.Protocol.AuthBasic.Login != "" {
-			conf.Protocol.AuthBasic = konfig.Protocol.AuthBasic
-		}
-
-		if konfig.Log.Backend != 0 {
-			conf.Log.Backend = konfig.Log.Backend
-		}
-
-		if konfig.Log.LogLevel != 0 {
-			conf.Log.LogLevel = konfig.Log.LogLevel
-		}
-
-		if konfig.Log.Path != "" {
-			conf.Log.Path = konfig.Log.Path
+		if confc, e := merger.Merge(conf, konfig); e != nil {
+			return e
+		} else {
+			// YES, I trust myself
+			cast, _ := confc.(*RupicolaConfig)
+			*conf = *cast
 		}
 	}
 	return nil
@@ -583,10 +557,11 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 }
 
 // CheckParams ensures that all required paramters are present and have valid type
-func (m *MethodDef) CheckParams(req *rupicolarpc.JsonRpcRequest) error {
+func (m *MethodDef) CheckParams(req rupicolarpc.JsonRpcRequest) error {
 	// Check if required arguments are present
+	params := req.Params()
 	for name, arg := range m.Params {
-		val, ok := req.Params[name]
+		val, ok := params[name]
 		if !ok && !arg.Optional {
 			m.logger.Error("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
