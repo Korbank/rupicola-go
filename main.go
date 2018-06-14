@@ -47,6 +47,10 @@ func (child *rupicolaProcessorChild) listen() error {
 	return child.bind.Bind(child.mux, child.parent.config.Limits)
 }
 
+func (child *rupicolaProcessorChild) config() *RupicolaConfig {
+	return child.parent.config
+}
+
 // Create separate context for given bind point (required for concurrent listening)
 func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
 	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux()}
@@ -82,9 +86,10 @@ func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
 }
 
 type httpJSONRequest struct {
-	err error
-	r   *http.Request
-	m   rupicolarpc.MethodType
+	err      error
+	r        *http.Request
+	m        rupicolarpc.MethodType
+	userData rupicolaRPCContext
 }
 
 func (w *httpJSONRequest) Len() int64 {
@@ -95,6 +100,10 @@ func (w *httpJSONRequest) OutputMode() rupicolarpc.MethodType {
 	return w.m
 }
 
+func (w *httpJSONRequest) UserData() rupicolarpc.UserData {
+	return &w.userData
+}
+
 func (w *httpJSONRequest) Reader() io.ReadCloser {
 	if w.err != nil {
 		return &failureReader{w.err}
@@ -103,8 +112,13 @@ func (w *httpJSONRequest) Reader() io.ReadCloser {
 }
 
 // ServeHTTP is implementation of http interface
-func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Debug("processing request", "address", r.RemoteAddr, "method", r.Method, "size", r.ContentLength, "path", r.URL)
+func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	log.Debug("processing request",
+		"address", r.RemoteAddr,
+		"method", r.Method,
+		"size", r.ContentLength,
+		"path", r.URL)
+
 	defer r.Body.Close()
 
 	// Accept only POST [this is corrent transport level error]
@@ -116,41 +130,42 @@ func (s *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	// Check for "payload size". According to spec
 	// Payload = 0 mean ignore
-	if s.parent.limits.PayloadSize > 0 && r.ContentLength > int64(s.parent.limits.PayloadSize) {
+	if child.parent.limits.PayloadSize > 0 && r.ContentLength > int64(child.parent.limits.PayloadSize) {
 		w.WriteHeader(http.StatusBadRequest)
 		log.Warn("request too big")
 		return
 	}
 	request := &httpJSONRequest{r: r}
-	rpcOperationMode := &request.m
 
-	var context rupicolaRPCContext
-	context.parent = s.parent
-	if r.RequestURI == s.parent.config.Protocol.URI.RPC {
-		context.isRPC = true
-		*rpcOperationMode = rupicolarpc.RPCMethod
-	} else if r.RequestURI == s.parent.config.Protocol.URI.Streamed {
-		context.isRPC = false
-		*rpcOperationMode = rupicolarpc.StreamingMethodLegacy
+	//var userData rupicolaRPCContext
+	userData := &request.userData
+
+	userData.parent = child.parent
+	if r.RequestURI == child.config().Protocol.URI.RPC {
+		userData.isRPC = true
+		request.m = rupicolarpc.RPCMethod
+	} else if r.RequestURI == child.config().Protocol.URI.Streamed {
+		userData.isRPC = false
+		request.m = rupicolarpc.StreamingMethodLegacy
 	} else {
 		log.Warn("Unrecognized URI", "uri", r.RequestURI)
 		return
 	}
 
 	login, password, _ := r.BasicAuth()
-	context.isAuthorized = s.parent.config.isValidAuth(login, password)
+	userData.isAuthorized = child.config().isValidAuth(login, password)
 
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
 	if ip.IsLoopback() {
-		context.allowPrivate = s.bind.AllowPrivate
+		userData.allowPrivate = child.bind.AllowPrivate
 	}
 
-	if !context.isAuthorized && !context.allowPrivate {
+	if !userData.isAuthorized && !userData.allowPrivate {
 		request.err = rpcUnauthorizedError
 	}
 
-	s.parent.processor.Process(request, w, &context)
+	child.parent.processor.ProcessContext(r.Context(), request, w)
 }
 
 func registerCleanupAtExit(config *RupicolaConfig) {

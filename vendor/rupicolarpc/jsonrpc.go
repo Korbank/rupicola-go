@@ -26,11 +26,6 @@ var (
 	JsonRPCversion20s                = JsonRPCversion20 + "+s"
 )
 
-const (
-	// RupicalaContextKeyContext : Custom data assigned to process
-	RupicalaContextKeyContext ContextKey = 0
-)
-
 // MethodType : Supported or requested method response format
 type MethodType int
 
@@ -54,9 +49,18 @@ type NewInvoker interface {
 	Invoke(context.Context, JsonRpcRequest, RPCResponser)
 }
 
+// UserData is user provided custom data passed to invocation
+type UserData interface{}
+
+// RequestDefinition ...
 type RequestDefinition interface {
 	Reader() io.ReadCloser
 	OutputMode() MethodType
+	UserData() UserData
+}
+type methodDef struct {
+	Invoker NewInvoker
+	limits
 }
 
 // Not sure if we should expose new style interface
@@ -72,11 +76,6 @@ func (o *OldToNew) Invoke(ctx context.Context, r JsonRpcRequest, out RPCResponse
 	} else {
 		out.SetResponseResult(re)
 	}
-}
-
-type methodDef struct {
-	Invoker NewInvoker
-	limits
 }
 
 // Execution timmeout change maximum allowed execution time
@@ -105,14 +104,21 @@ func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest, out RPCResponser
 // convert them to string anyway...
 type jsonRPCRequestOptions map[string]interface{}
 
-// JsonRpcRequest ...
-type JsonRpcRequest struct {
+// JsonRpcRequest ... Just POCO
+type jsonRpcRequest struct {
 	Jsonrpc JsonRPCversion
 	Method  string
 	Params  jsonRPCRequestOptions
 	// can be any json valid type (including null)
 	// or not present at all
 	ID *interface{}
+}
+
+type JsonRpcRequest interface {
+	Method() string
+	Version() JsonRPCversion
+	UserData() UserData
+	Params() jsonRPCRequestOptions
 }
 
 // UnmarshalJSON is custom unmarshal for JsonRpcRequestOptions
@@ -144,7 +150,7 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 
 }
 
-func (r *JsonRpcRequest) isValid() bool {
+func (r *jsonRpcRequest) isValid() bool {
 	return (r.Jsonrpc == JsonRPCversion20 || r.Jsonrpc == JsonRPCversion20s) && r.Method != ""
 }
 
@@ -337,7 +343,8 @@ type JsonRpcProcessor interface {
 	AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef
 	AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef
 	AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef
-	Process(request RequestDefinition, response io.Writer, ctx interface{}) error
+	Process(request RequestDefinition, response io.Writer) error
+	ProcessContext(ctx context.Context, request RequestDefinition, response io.Writer) error
 	ExecutionTimeout(metype MethodType, timeout time.Duration)
 }
 
@@ -417,7 +424,7 @@ func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
 	return responser
 }
 
-func changeProtocolIfRequired(responser rpcResponserPriv, request *JsonRpcRequest) rpcResponserPriv {
+func changeProtocolIfRequired(responser rpcResponserPriv, request *jsonRpcRequest) rpcResponserPriv {
 	if request.Jsonrpc == JsonRPCversion20s {
 		switch responser.(type) {
 		case *legacyStreamingResponse:
@@ -429,7 +436,7 @@ func changeProtocolIfRequired(responser rpcResponserPriv, request *JsonRpcReques
 }
 
 // ReadFrom implements io.Reader
-func (r *JsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
+func (r *jsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
 	decoder := json.NewDecoder(re)
 	err = decoder.Decode(r)
 	if err != nil {
@@ -447,8 +454,8 @@ func (r *JsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
 	return
 }
 
-type jsonRPCrequest struct {
-	JsonRpcRequest
+type jsonRPCrequestPriv struct {
+	jsonRpcRequest
 	ctx context.Context
 	rpcResponserPriv
 	err  error
@@ -458,19 +465,35 @@ type jsonRPCrequest struct {
 	log  log.Logger
 }
 
-func (f *jsonRPCrequest) readFromTransport() error {
+func (f *jsonRPCrequestPriv) Method() string {
+	return f.jsonRpcRequest.Method
+}
+
+func (f *jsonRPCrequestPriv) Version() JsonRPCversion {
+	return f.Jsonrpc
+}
+
+func (f *jsonRPCrequestPriv) Params() jsonRPCRequestOptions {
+	return f.jsonRpcRequest.Params
+}
+
+func (f *jsonRPCrequestPriv) UserData() UserData {
+	return f.req.UserData()
+}
+
+func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
-	_, f.err = f.JsonRpcRequest.ReadFrom(r)
+	_, f.err = f.jsonRpcRequest.ReadFrom(r)
 	f.log = log.New("method", f.Method)
 	r.Close()
 	return f.err
 }
 
-func (f *jsonRPCrequest) ensureProtocol() {
-	f.rpcResponserPriv = changeProtocolIfRequired(f.rpcResponserPriv, &f.JsonRpcRequest)
+func (f *jsonRPCrequestPriv) ensureProtocol() {
+	f.rpcResponserPriv = changeProtocolIfRequired(f.rpcResponserPriv, &f.jsonRpcRequest)
 }
 
-func (f *jsonRPCrequest) Close() error {
+func (f *jsonRPCrequestPriv) Close() error {
 	// this is noop if we already upgraded
 	f.ensureProtocol()
 	if f.err != nil {
@@ -484,7 +507,7 @@ func (f *jsonRPCrequest) Close() error {
 	return f.rpcResponserPriv.Close()
 }
 
-func (f *jsonRPCrequest) process() error {
+func (f *jsonRPCrequestPriv) process() error {
 	// Prevent processing if we got errors on transport level
 	if f.err != nil {
 		return f.err
@@ -499,7 +522,7 @@ func (f *jsonRPCrequest) process() error {
 	}
 
 	metype := f.req.OutputMode()
-	m, err := f.p.method(f.Method, metype)
+	m, err := f.p.method(f.jsonRpcRequest.Method, metype)
 	if err != nil {
 		f.err = err
 		return f.err
@@ -530,17 +553,23 @@ func (f *jsonRPCrequest) process() error {
 
 	go func() {
 		defer close(f.done)
-		m.Invoke(f.ctx, f.JsonRpcRequest, f)
+		m.Invoke(f.ctx, f, f)
 	}()
 	// 1) Timeout or we done
 	select {
 	case <-f.ctx.Done():
+		// oooor transport error?
 		f.log.Info("method timed out", "method", f.Method)
+		f.log.Info("context error", "error", f.ctx.Err())
+		// this could be canceled too... but
+		// why it should be like that? if we get
+		// cancel from transport then whatever no one is
+		// going to read answer anyway
 		f.err = ErrTimeout
 	case <-f.done:
 	}
 	// 2) If we exit from timeout wait for ending
-	if f.err == ErrTimeout {
+	if f.err != nil {
 		select {
 		// This is just to ensure we won't hang forever if procedure
 		// is misbehaving
@@ -553,8 +582,8 @@ func (f *jsonRPCrequest) process() error {
 }
 
 // SetResponseError saves passed error
-func (f *jsonRPCrequest) SetResponseError(errs error) error {
-	if f.ctx.Err() == context.DeadlineExceeded {
+func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
+	if f.ctx.Err() != nil {
 		f.log.Warn("trying to set error after deadline", "error", errs)
 	} else {
 		// should we keep original error or overwrite it with response?
@@ -567,28 +596,14 @@ func (f *jsonRPCrequest) SetResponseError(errs error) error {
 }
 
 // SetResponseResult handle Reader case
-func (f *jsonRPCrequest) SetResponseResult(result interface{}) error {
-	if f.ctx.Err() == context.DeadlineExceeded {
+func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
+	if f.ctx.Err() != nil {
 		f.log.Warn("trying to set result after deadline")
 		return f.err
 	}
 
 	switch converted := result.(type) {
 	case io.Reader:
-		// TODO: Should we care?
-		//if closer, ok := result.(io.Closer); ok {
-		//	// if this is closer method we want to close it
-		//	// at the end or after timeout
-		//	go func() {
-		//		select {
-		//		case <-b.ctx.Done():
-		//		case <-b.done:
-		//			log.Debug("Done from b.done")
-		//		}
-		//		closer.Close()
-		//	}()
-		//	//defer func() { log.Debug("Executing close"); closer.Close() }()
-		//}
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
 			f.log.Error("stream copy failed", "method", f.Method, "err", f.err)
@@ -600,8 +615,8 @@ func (f *jsonRPCrequest) SetResponseResult(result interface{}) error {
 	return f.err
 }
 
-func (p *jsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequest {
-	jsonRequest := jsonRPCrequest{
+func (p *jsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequestPriv {
+	jsonRequest := jsonRPCrequestPriv{
 		ctx:              context,
 		req:              request,
 		rpcResponserPriv: newResponser(response, request.OutputMode()),
@@ -642,11 +657,14 @@ func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 }
 
 // Process : Parse and process request from data
-func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer, ctx interface{}) error {
-	kontext := context.Background()
-	kontext = context.WithValue(kontext, RupicalaContextKeyContext, ctx)
+func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer) error {
+	return p.ProcessContext(context.Background(), request, response)
+}
+
+func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request RequestDefinition, response io.Writer) error {
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
 	// We should just check if any write success
+	// NEW: Check behavior after using connection context
 	jsonRequest := p.spawnRequest(kontext, request, response)
 	jsonRequest.readFromTransport()
 	jsonRequest.process()

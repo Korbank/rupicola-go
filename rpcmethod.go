@@ -13,7 +13,7 @@ import (
 )
 
 func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
-	uncastedContext := ctx.Value(rupicolarpc.RupicalaContextKeyContext)
+	uncastedContext := req.UserData()
 	var ok bool
 	var castedContext *rupicolaRPCContext
 	if uncastedContext != nil {
@@ -30,14 +30,14 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
 	}
 
-	if err := m.CheckParams(&req); err != nil {
+	if err := m.CheckParams(req); err != nil {
 		return nil, nil, err
 	}
 
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg.evalueateArgs(req.Params, buffer)
+		skip, err := arg.evalueateArgs(req.Params(), buffer)
 		if err != nil {
 			log.Error("error", "err", err)
 			return nil, nil, err
