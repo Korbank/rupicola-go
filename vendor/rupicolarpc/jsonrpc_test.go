@@ -23,6 +23,10 @@ func (d *dummyRequest) OutputMode() MethodType {
 	return d.m
 }
 
+func (d *dummyRequest) UserData() UserData {
+	return nil
+}
+
 func TestMaxSize(t *testing.T) {
 	types := []MethodType{RPCMethod, StreamingMethodLegacy, StreamingMethod}
 	requestString := []string{
@@ -39,7 +43,7 @@ func TestMaxSize(t *testing.T) {
 	for _, metype := range types {
 		rpc.AddMethodFuncNew("method", metype,
 			func(in JsonRpcRequest, context interface{}, out RPCResponser) {
-				stream := in.Params["stream"].(bool)
+				stream := in.Params()["stream"].(bool)
 				response := strings.Repeat("x", 40)
 				if stream {
 					out.SetResponseResult(strings.NewReader(response))
@@ -49,7 +53,7 @@ func TestMaxSize(t *testing.T) {
 			}).MaxSize(10)
 		for _, req := range requestString {
 			response := bytes.NewBuffer(nil)
-			err := rpc.Process(&dummyRequest{strings.NewReader(req), metype}, response, nil)
+			err := rpc.Process(&dummyRequest{strings.NewReader(req), metype}, response)
 			if err != ErrLimitExceed {
 				t.Fatalf("%v %v %v", metype, req, err)
 			}
@@ -66,7 +70,7 @@ func TestMethodNotFound(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, nil })
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response)
 	if err != ErrMethodNotFound {
 		t.Fail()
 	}
@@ -83,7 +87,7 @@ func TestMethodReader(t *testing.T) {
 	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) {
 		return strings.NewReader("string"), nil
 	})
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response)
 	if err != nil {
 		t.Fail()
 	}
@@ -98,7 +102,7 @@ func TestMethodImmediate(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("method", RPCMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return "string", nil })
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response)
 	if err != nil {
 		t.Fail()
 	}
@@ -113,7 +117,7 @@ func TestLegacyMethodStreaming(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("method", StreamingMethodLegacy, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return "string", nil })
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response)
 	if err != nil {
 		t.Fail()
 	}
@@ -155,7 +159,7 @@ func TestMethodStreaming(t *testing.T) {
 		`{"jsonrpc":"2.0+s","result":"Done","id":0}`, "\n")
 	response := bytes.NewBuffer(nil)
 
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response)
 	if err != nil {
 		t.Fail()
 	}
@@ -171,7 +175,7 @@ func TestLegacyMethodStreamingError(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("method", StreamingMethodLegacy, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response)
 	if err != responseError {
 		t.Error(err, responseError)
 	}
@@ -187,7 +191,7 @@ func TestMethodStreamingError(t *testing.T) {
 	response := bytes.NewBuffer(nil)
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("method", StreamingMethod, func(in JsonRpcRequest, context interface{}) (interface{}, error) { return nil, responseError })
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response)
 	if err != responseError {
 		t.Fail()
 	}
@@ -204,7 +208,7 @@ func TestMethodRpcError(t *testing.T) {
 	rpc.AddMethodFuncNew("method", RPCMethod, func(in JsonRpcRequest, context interface{}, out RPCResponser) {
 		out.SetResponseError(responseError)
 	})
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response)
 	if err != responseError {
 		t.Fail()
 	}
@@ -224,7 +228,7 @@ func TestMethodRpcTimeout(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		out.SetResponseError(responseError)
 	})
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), RPCMethod}, response)
 	if err != ErrTimeout {
 		t.Error(err)
 	}
@@ -244,7 +248,7 @@ func TestLegacyMethodStreamingTimeout(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 			return nil, responseError
 		}).ExecutionTimeout(10 * time.Millisecond)
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethodLegacy}, response)
 	if err != ErrTimeout {
 		t.Error(err)
 	}
@@ -264,7 +268,7 @@ func TestMethodStreamingTimeout(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 			return nil, responseError
 		}).ExecutionTimeout(10 * time.Millisecond)
-	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response, nil)
+	err := rpc.Process(&dummyRequest{strings.NewReader(requestString), StreamingMethod}, response)
 	if err != ErrTimeout {
 		t.Error(err)
 	}
@@ -295,19 +299,19 @@ func TestRFC(t *testing.T) {
 	}
 	rpc := NewJsonRpcProcessor()
 	rpc.AddMethodFunc("subtract", RPCMethod, func(in JsonRpcRequest, _ interface{}) (interface{}, error) {
-		arg0, ok := in.Params["1"].(float64)
+		arg0, ok := in.Params()["1"].(float64)
 		if !ok {
-			arg0, ok = in.Params["minuend"].(float64)
+			arg0, ok = in.Params()["minuend"].(float64)
 		}
-		arg1, ok := in.Params["2"].(float64)
+		arg1, ok := in.Params()["2"].(float64)
 		if !ok {
-			arg1, ok = in.Params["subtrahend"].(float64)
+			arg1, ok = in.Params()["subtrahend"].(float64)
 		}
 		return arg0 - arg1, nil
 	})
 	for i, v := range testCases {
 		response := bytes.NewBuffer(nil)
-		err := rpc.Process(&dummyRequest{strings.NewReader(v.request), RPCMethod}, response, nil)
+		err := rpc.Process(&dummyRequest{strings.NewReader(v.request), RPCMethod}, response)
 		if v.response != strings.TrimSpace(response.String()) {
 			t.Fatalf("Failed [%d] %s %s:%s", i+1, v.response, response.String(), err)
 		}
