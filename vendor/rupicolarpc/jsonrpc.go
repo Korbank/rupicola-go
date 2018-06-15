@@ -63,13 +63,11 @@ type methodDef struct {
 	limits
 }
 
-// Not sure if we should expose new style interface
-// for now keep it public
-type OldToNew struct {
+type oldToNewAdapter struct {
 	Invoker
 }
 
-func (o *OldToNew) Invoke(ctx context.Context, r JsonRpcRequest, out RPCResponser) {
+func (o *oldToNewAdapter) Invoke(ctx context.Context, r JsonRpcRequest, out RPCResponser) {
 	re, e := o.Invoker.Invoke(ctx, r)
 	if e != nil {
 		out.SetResponseError(e)
@@ -90,10 +88,6 @@ func (m *methodDef) ExecutionTimeout(timeout time.Duration) {
 func (m *methodDef) MaxSize(size uint) {
 	m.MaxResponse = size
 }
-
-//func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest) (interface{}, error) {
-//	return m.Invoker.Invoke(c, r)
-//}
 
 func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest, out RPCResponser) {
 	m.Invoker.Invoke(c, r, out)
@@ -361,7 +355,7 @@ type jsonRpcProcessor struct {
 
 // AddMethod add method
 func (p *jsonRpcProcessor) AddMethod(name string, metype MethodType, action Invoker) *methodDef {
-	return p.AddMethodNew(name, metype, &OldToNew{action})
+	return p.AddMethodNew(name, metype, &oldToNewAdapter{action})
 }
 
 func (p *jsonRpcProcessor) AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef {
