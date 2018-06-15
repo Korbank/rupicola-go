@@ -99,7 +99,7 @@ func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest, out RPCResponser
 type jsonRPCRequestOptions map[string]interface{}
 
 // JsonRpcRequest ... Just POCO
-type jsonRpcRequest struct {
+type requestData struct {
 	Jsonrpc JsonRPCversion
 	Method  string
 	Params  jsonRPCRequestOptions
@@ -144,7 +144,7 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 
 }
 
-func (r *jsonRpcRequest) isValid() bool {
+func (r *requestData) isValid() bool {
 	return (r.Jsonrpc == JsonRPCversion20 || r.Jsonrpc == JsonRPCversion20s) && r.Method != ""
 }
 
@@ -418,7 +418,7 @@ func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
 	return responser
 }
 
-func changeProtocolIfRequired(responser rpcResponserPriv, request *jsonRpcRequest) rpcResponserPriv {
+func changeProtocolIfRequired(responser rpcResponserPriv, request *requestData) rpcResponserPriv {
 	if request.Jsonrpc == JsonRPCversion20s {
 		switch responser.(type) {
 		case *legacyStreamingResponse:
@@ -430,7 +430,7 @@ func changeProtocolIfRequired(responser rpcResponserPriv, request *jsonRpcReques
 }
 
 // ReadFrom implements io.Reader
-func (r *jsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
+func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 	decoder := json.NewDecoder(re)
 	err = decoder.Decode(r)
 	if err != nil {
@@ -449,7 +449,7 @@ func (r *jsonRpcRequest) ReadFrom(re io.Reader) (n int64, err error) {
 }
 
 type jsonRPCrequestPriv struct {
-	jsonRpcRequest
+	requestData
 	ctx context.Context
 	rpcResponserPriv
 	err  error
@@ -460,7 +460,7 @@ type jsonRPCrequestPriv struct {
 }
 
 func (f *jsonRPCrequestPriv) Method() string {
-	return f.jsonRpcRequest.Method
+	return f.requestData.Method
 }
 
 func (f *jsonRPCrequestPriv) Version() JsonRPCversion {
@@ -468,7 +468,7 @@ func (f *jsonRPCrequestPriv) Version() JsonRPCversion {
 }
 
 func (f *jsonRPCrequestPriv) Params() jsonRPCRequestOptions {
-	return f.jsonRpcRequest.Params
+	return f.requestData.Params
 }
 
 func (f *jsonRPCrequestPriv) UserData() UserData {
@@ -477,14 +477,14 @@ func (f *jsonRPCrequestPriv) UserData() UserData {
 
 func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
-	_, f.err = f.jsonRpcRequest.ReadFrom(r)
+	_, f.err = f.requestData.ReadFrom(r)
 	f.log = log.New("method", f.Method)
 	r.Close()
 	return f.err
 }
 
 func (f *jsonRPCrequestPriv) ensureProtocol() {
-	f.rpcResponserPriv = changeProtocolIfRequired(f.rpcResponserPriv, &f.jsonRpcRequest)
+	f.rpcResponserPriv = changeProtocolIfRequired(f.rpcResponserPriv, &f.requestData)
 }
 
 func (f *jsonRPCrequestPriv) Close() error {
@@ -516,7 +516,7 @@ func (f *jsonRPCrequestPriv) process() error {
 	}
 
 	metype := f.req.OutputMode()
-	m, err := f.p.method(f.jsonRpcRequest.Method, metype)
+	m, err := f.p.method(f.requestData.Method, metype)
 	if err != nil {
 		f.err = err
 		return f.err
