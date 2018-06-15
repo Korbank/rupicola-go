@@ -412,14 +412,13 @@ func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
 		if err != nil {
 			return err
 		}
-
-		if confc, e := merger.Merge(conf, konfig); e != nil {
+		merged, e := merger.Merge(conf, konfig)
+		if e != nil {
 			return e
-		} else {
-			// YES, I trust myself
-			cast, _ := confc.(*RupicolaConfig)
-			*conf = *cast
 		}
+		// YES, I trust myself
+		cast, _ := merged.(*RupicolaConfig)
+		*conf = *cast
 	}
 	return nil
 }
