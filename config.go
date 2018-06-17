@@ -534,6 +534,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		limitsSection.Get("payload-size").Uint32(5242880),
 		limitsSection.Get("max-response").Uint32(5242880),
 	}
+	var err error
 	protocolSection := x.Get("protocol")
 	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").String("")
 	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").String("")
@@ -547,24 +548,39 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		GID := int(bind.Get("gid").Int32(int32(os.Getgid())))
 		b.GID = &GID
 		b.Key = bind.Get("key").String("")
-		//b.Mode = FileMode(bind.Get("mode").Int32(0)) // need love...
+		b.Mode = os.FileMode(bind.Get("mode").Uint32(660)) // need love...
+		shamefullFileModeFix(&b.Mode)
+
 		b.Port = uint16(bind.Get("port").Int32(0))
-		//b.Type = bind.Get("type").String("")
+		b.Type, err = parseBindType(bind.Get("type").String(""))
 		UID := int(bind.Get("uid").Int32(int32(os.Getuid())))
 		b.UID = &UID
 		c.Protocol.Bind = append(c.Protocol.Bind, b)
 	}
 	methodsSection := x.Get("methods")
-	var err error
+
 	for k, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1)
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
 		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
-		//meth.InvokeInfo.Args = v.Get("invoke", "args").Array(nil)
 		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0)
-
+		meth.InvokeInfo.Exec = v.Get("invoke", "exec").String("")
+		gid := v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
+		meth.InvokeInfo.RunAs.GID = &gid
+		uid := v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
+		meth.InvokeInfo.RunAs.UID = &uid
+		meth.Output = v.Get("output")
+		meth.Private = v.Get("private").Bool(false)
+		meth.Streamed = v.Get("streamed").Bool(false)
+		methParams := v.Get("params").Map(nil)
+		for k, v := range methParams {
+			tyype := v.Get("type").String("") // required
+			optional := v.Get("optional").Bool(false)
+			mepa := MethodParam{Optional: optional, Type: parseMethodParamType(tyype)}
+		}
+		//meth.Params =
 		c.Methods[k] = meth
 	}
 
