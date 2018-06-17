@@ -198,6 +198,48 @@ type Protocol struct {
 	}
 }
 
+func parseBackend(backend string) (Backend, error) {
+	switch strings.ToLower(backend) {
+	case "syslog":
+		return BackendSyslog, nil
+	case "stdout":
+		fallthrough
+	case "":
+		return BackendStdout, nil
+	default:
+		return BackendStdout, fmt.Errorf("Unknown backend %s", backend)
+	}
+}
+func parseLoglevel(level string) (LogLevel, error) {
+	switch strings.ToLower(level) {
+	case "off":
+		return LLOff, nil
+	case "trace":
+		return LLDebug, nil
+	case "debug":
+		return LLDebug, nil
+	case "info":
+		return LLInfo, nil
+	case "warn":
+		return LLWarn, nil
+	case "error":
+		return LLError, nil
+	default:
+		return LLOff, fmt.Errorf("unknown log level: %s", level)
+	}
+}
+func parseEncoding(value string) (MethodEncoding, error) {
+	value = strings.ToLower(value)
+	switch value {
+	case "base64":
+		return Base64, nil
+	case "utf-8", "utf8":
+		return Utf8, nil
+	default:
+		return Utf8, errors.New("Unknown output type")
+	}
+}
+
 // UnmarshalYAML is unmarshaling from yaml for LogDef
 func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var logLevel struct {
@@ -209,32 +251,16 @@ func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 	ll.Path = logLevel.Path
-	switch strings.ToLower(logLevel.Backend) {
-	case "syslog":
-		ll.Backend = BackendSyslog
-	case "stdout":
-		fallthrough
-	case "":
-		ll.Backend = BackendStdout
-	default:
-		return fmt.Errorf("Unknown backend %s", logLevel.Backend)
+	backend, err := parseBackend(logLevel.Backend)
+	if err != nil {
+		return err
 	}
-	switch strings.ToLower(logLevel.Level) {
-	case "off":
-		ll.LogLevel = LLOff
-	case "trace":
-		ll.LogLevel = LLDebug
-	case "debug":
-		ll.LogLevel = LLDebug
-	case "info":
-		ll.LogLevel = LLInfo
-	case "warn":
-		ll.LogLevel = LLWarn
-	case "error":
-		ll.LogLevel = LLError
-	default:
-		return fmt.Errorf("unknown log level: %s", logLevel.Level)
+	ll.Backend = backend
+	level, err := parseLoglevel(logLevel.Level)
+	if err != nil {
+		return err
 	}
+	ll.LogLevel = level
 	return nil
 }
 
@@ -277,67 +303,64 @@ func (w *includeConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	w.Name = stringType
 	return nil
 }
+func parseBindType(bindType string) (BindType, error) {
+	switch strings.ToLower(bindType) {
+	case "http":
+		return HTTP, nil
+	case "https":
+		return HTTPS, nil
+	case "unix":
+		return Unix, nil
+	default:
+		return HTTP, fmt.Errorf("Unknown bind type %v", bindType)
+	}
+}
 
 // UnmarshalYAML ignore
 func (w *BindType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var bindType string
-	if err := unmarshal(&bindType); err != nil {
+	var err error
+	if err = unmarshal(&bindType); err != nil {
 		return err
 	}
-	switch strings.ToLower(bindType) {
-	case "http":
-		*w = HTTP
-	case "https":
-		*w = HTTPS
-	case "unix":
-		*w = Unix
-	default:
-		return fmt.Errorf("Unknown bind type %v", bindType)
-	}
-	return nil
+	*w, err = parseBindType(bindType)
+	return err
 }
 
 // UnmarshalYAML ignore
 func (w *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var value string
-	if err := unmarshal(&value); err != nil {
+	var err error
+	if err = unmarshal(&value); err != nil {
 		return err
 	}
-	value = strings.ToLower(value)
-	switch value {
-	case "base64":
-		*w = Base64
-	case "utf-8":
-	case "utf8":
-		*w = Utf8
+
+	*w, err = parseEncoding(value)
+	return err
+}
+
+func parseMethodParamType(value string) (MethodParamType, error) {
+	switch strings.ToLower(value) {
+	case "string":
+		return String, nil
+	case "integer", "int":
+		return Int, nil
+	case "bool", "boolean":
+		return Bool, nil
 	default:
-		return errors.New("Unknown output type")
+		return String, errors.New("Unknown type")
 	}
-	return nil
 }
 
 // UnmarshalYAML ignore
 func (w *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var value string
-
-	if err := unmarshal(&value); err != nil {
+	var err error
+	if err = unmarshal(&value); err != nil {
 		return err
 	}
-
-	switch strings.ToLower(value) {
-	case "string":
-		*w = String
-	case "integer":
-	case "int":
-		*w = Int
-	case "bool":
-	case "boolean":
-		*w = Bool
-	default:
-		return errors.New("Unknown type")
-	}
-
-	return nil
+	*w, err = parseMethodParamType(value)
+	return err
 }
 
 // UnmarshalYAML ignore
@@ -506,16 +529,16 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	c := NewConfig()
 	limitsSection := x.Get("limits")
 	c.Limits = Limits{
-		limitsSection.Get("read-timeout").Duration(c.Limits.ReadTimeout),
-		limitsSection.Get("exec-timeout").Duration(c.Limits.ExecTimeout),
-		limitsSection.Get("payload-size").Uint32(c.Limits.PayloadSize),
-		limitsSection.Get("max-response").Uint32(c.Limits.MaxResponse),
+		limitsSection.Get("read-timeout").Duration(10000),
+		limitsSection.Get("exec-timeout").Duration(0),
+		limitsSection.Get("payload-size").Uint32(5242880),
+		limitsSection.Get("max-response").Uint32(5242880),
 	}
 	protocolSection := x.Get("protocol")
-	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic").Get("login").String("")
-	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic").Get("password").String("")
-	c.Protocol.URI.RPC = protocolSection.Get("uri").Get("rpc").String("/jsonrpc")
-	c.Protocol.URI.Streamed = protocolSection.Get("uri").Get("streamed").Get("/streaming").String("")
+	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").String("")
+	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").String("")
+	c.Protocol.URI.RPC = protocolSection.Get("uri", "rpc").String("/jsonrpc")
+	c.Protocol.URI.Streamed = protocolSection.Get("uri", "streamed").String("/streaming")
 	for _, bind := range protocolSection.Get("bind").Array(nil) {
 		b := new(Bind)
 		b.Address = bind.Get("address").String("") // error on empty
@@ -532,20 +555,32 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		c.Protocol.Bind = append(c.Protocol.Bind, b)
 	}
 	methodsSection := x.Get("methods")
+	var err error
 	for k, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
-		meth.Limits.ExecTimeout = v.Get("limits").Get("exec-timeout").Duration(c.Limits.ExecTimeout)
-		meth.Limits.MaxResponse = v.Get("limits").Get("max-response").Int64(int64(c.Limits.MaxResponse))
+		meth.Limits = new(MethodLimits)
+		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1)
+		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
+		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
+		//meth.InvokeInfo.Args = v.Get("invoke", "args").Array(nil)
+		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0)
 
 		c.Methods[k] = meth
 	}
-	//logsSecrion := x.Get("log")
-	//c.Log.Backend = logsSecrion.Get("backend").String("")
-	//c.Log.LogLevel = logsSecrion.Get("level").String("")
-	//c.Log.Path = logsSecrion.Get("path").String("")
+
+	logsSecrion := x.Get("log")
+	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").String(""))
+	if err != nil {
+		return nil, err
+	}
+	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").String(""))
+	if err != nil {
+		return nil, err
+	}
+	c.Log.Path = logsSecrion.Get("path").String("")
 
 	cfg := NewConfig()
-	err := cfg.readConfig(configFilePath, true)
+	err = cfg.readConfig(configFilePath, true)
 
 	if err != nil {
 		return cfg, err
