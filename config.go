@@ -12,6 +12,7 @@ import (
 
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/merger"
 
+	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/config"
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
 
 	log "github.com/inconshreveable/log15"
@@ -497,6 +498,52 @@ func shamefullFileModeFix(inout *os.FileMode) error {
 
 // ReadConfig from file
 func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
+	x := new(config.Config)
+	if err := x.Load(configFilePath); err != nil {
+		return nil, err
+	}
+
+	c := NewConfig()
+	limitsSection := x.Get("limits")
+	c.Limits = Limits{
+		limitsSection.Get("read-timeout").Duration(c.Limits.ReadTimeout),
+		limitsSection.Get("exec-timeout").Duration(c.Limits.ExecTimeout),
+		limitsSection.Get("payload-size").Uint32(c.Limits.PayloadSize),
+		limitsSection.Get("max-response").Uint32(c.Limits.MaxResponse),
+	}
+	protocolSection := x.Get("protocol")
+	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic").Get("login").String("")
+	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic").Get("password").String("")
+	c.Protocol.URI.RPC = protocolSection.Get("uri").Get("rpc").String("/jsonrpc")
+	c.Protocol.URI.Streamed = protocolSection.Get("uri").Get("streamed").Get("/streaming").String("")
+	for _, bind := range protocolSection.Get("bind").Array(nil) {
+		b := new(Bind)
+		b.Address = bind.Get("address").String("") // error on empty
+		b.AllowPrivate = bind.Get("allow-private").Bool(false)
+		b.Cert = bind.Get("cert").String("")
+		GID := int(bind.Get("gid").Int32(int32(os.Getgid())))
+		b.GID = &GID
+		b.Key = bind.Get("key").String("")
+		//b.Mode = FileMode(bind.Get("mode").Int32(0)) // need love...
+		b.Port = uint16(bind.Get("port").Int32(0))
+		//b.Type = bind.Get("type").String("")
+		UID := int(bind.Get("uid").Int32(int32(os.Getuid())))
+		b.UID = &UID
+		c.Protocol.Bind = append(c.Protocol.Bind, b)
+	}
+	methodsSection := x.Get("methods")
+	for k, v := range methodsSection.Map(nil) {
+		meth := new(MethodDef)
+		meth.Limits.ExecTimeout = v.Get("limits").Get("exec-timeout").Duration(c.Limits.ExecTimeout)
+		meth.Limits.MaxResponse = v.Get("limits").Get("max-response").Int64(int64(c.Limits.MaxResponse))
+
+		c.Methods[k] = meth
+	}
+	//logsSecrion := x.Get("log")
+	//c.Log.Backend = logsSecrion.Get("backend").String("")
+	//c.Log.LogLevel = logsSecrion.Get("level").String("")
+	//c.Log.Path = logsSecrion.Get("path").String("")
+
 	cfg := NewConfig()
 	err := cfg.readConfig(configFilePath, true)
 
