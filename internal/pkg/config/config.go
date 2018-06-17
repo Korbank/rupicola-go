@@ -28,7 +28,8 @@ type Value interface {
 	Array(def []interface{}) []Value
 	String(def string) string
 	Bool(def bool) bool
-	Get(key string) Value
+	Get(key ...string) Value
+	get(key string) Value
 	IsValid() bool
 }
 
@@ -126,7 +127,7 @@ func valFrom(this interface{}) Value {
 	}
 	return val
 }
-func (v *value) Get(key string) Value {
+func (v *value) get(key string) Value {
 	if v.Mapa == nil {
 		return &EmptyValue
 	}
@@ -135,6 +136,13 @@ func (v *value) Get(key string) Value {
 		return &EmptyValue
 	}
 	return val
+}
+func (v *value) Get(keys ...string) Value {
+	current := Value(v)
+	for _, key := range keys {
+		current = current.get(key)
+	}
+	return current
 }
 
 func (v *value) Int64(def int64) int64 {
