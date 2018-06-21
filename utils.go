@@ -94,8 +94,8 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 		}
 
 		defer ln.Close()
-		if err := os.Chown(bind.Address, *bind.UID, *bind.GID); err != nil {
-			log.Crit("Setting permission failed", "address", bind.Address, "uid", *bind.UID, "gid", *bind.GID)
+		if err := os.Chown(bind.Address, bind.UID, bind.GID); err != nil {
+			log.Crit("Setting permission failed", "address", bind.Address, "uid", bind.UID, "gid", bind.GID)
 			return err
 		}
 		return srv.Serve(ln)

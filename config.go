@@ -173,8 +173,8 @@ type Bind struct {
 	Key string
 	// Only for Unix [default=660]
 	Mode os.FileMode
-	UID  *int
-	GID  *int
+	UID  int
+	GID  int
 }
 
 // Protocol - define bind points, auth and URI paths
@@ -375,16 +375,14 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		b.Address = bind.Get("address").String("") // error on empty
 		b.AllowPrivate = bind.Get("allow-private").Bool(false)
 		b.Cert = bind.Get("cert").String("")
-		GID := int(bind.Get("gid").Int32(int32(os.Getgid())))
-		b.GID = &GID
+		b.GID = int(bind.Get("gid").Int32(int32(os.Getgid())))
 		b.Key = bind.Get("key").String("")
 		b.Mode = os.FileMode(bind.Get("mode").Uint32(666)) // need love...
 		shamefullFileModeFix(&b.Mode)
 
 		b.Port = uint16(bind.Get("port").Int32(0))
 		b.Type, err = parseBindType(bind.Get("type").String(""))
-		UID := int(bind.Get("uid").Int32(int32(os.Getuid())))
-		b.UID = &UID
+		b.UID = int(bind.Get("uid").Int32(int32(os.Getuid())))
 		c.Protocol.Bind = append(c.Protocol.Bind, b)
 	}
 	methodsSection := x.Get("methods")
