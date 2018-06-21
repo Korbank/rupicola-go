@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/merger"
 
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/config"
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
@@ -19,24 +16,21 @@ import (
 
 	"crypto/subtle"
 	"encoding/json"
-	"path/filepath"
 
 	"rupicolarpc"
-
-	"gopkg.in/yaml.v2"
 )
 
 // Limits ...
 type Limits struct {
-	ReadTimeout time.Duration `yaml:"read-timeout,omitempty"`
-	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
-	PayloadSize uint32        `yaml:"payload-size,omitempty"`
-	MaxResponse uint32        `yaml:"max-response,omitempty"`
+	ReadTimeout time.Duration
+	ExecTimeout time.Duration
+	PayloadSize uint32
+	MaxResponse uint32
 }
 
 type methodLimits struct {
-	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
-	MaxResponse int64         `yaml:"max-response,omitempty"`
+	ExecTimeout time.Duration
+	MaxResponse int64
 }
 
 // MethodLimits define execution limits for method
@@ -96,8 +90,8 @@ type MethodParam struct {
 
 // RunAs ...
 type RunAs struct {
-	UID *uint32
-	GID *uint32
+	UID uint32
+	GID uint32
 }
 
 // MethodDef ...
@@ -110,8 +104,8 @@ type MethodDef struct {
 		Exec  string
 		Delay time.Duration
 		Args  []methodArgs
-		RunAs RunAs `yaml:"run-as,omitempty"`
-	} `yaml:"invoke"`
+		RunAs RunAs
+	}
 	// Pointer because we need to know when its unsed
 	Limits *MethodLimits
 	logger log.Logger
@@ -130,19 +124,19 @@ type BindType int
 
 const (
 	// Utf8 - Default message encoding
-	Utf8 MethodEncoding = 0
+	Utf8 MethodEncoding = iota
 	// Base64 - Encode message as base64
-	Base64 = 1
+	Base64
 	// Base85 - Encode message as base85
-	Base85 = 2
+	Base85
 )
 const (
 	// String - Method parameter should be string
-	String MethodParamType = 0
+	String MethodParamType = iota
 	// Int - Method parameter should be int
-	Int = 1
+	Int
 	// Bool - Method parameter should be bool
-	Bool = 2
+	Bool
 )
 
 type methodArgs struct {
@@ -172,7 +166,7 @@ type Bind struct {
 	Type         BindType
 	Address      string
 	Port         uint16
-	AllowPrivate bool `yaml:"allow_private"`
+	AllowPrivate bool
 	// Only for HTTPS
 	Cert string
 	// Only for HTTPS
@@ -190,7 +184,7 @@ type Protocol struct {
 	AuthBasic struct {
 		Login    string
 		Password string
-	} `yaml:"auth-basic"`
+	}
 
 	URI struct {
 		Streamed string
@@ -240,69 +234,6 @@ func parseEncoding(value string) (MethodEncoding, error) {
 	}
 }
 
-// UnmarshalYAML is unmarshaling from yaml for LogDef
-func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var logLevel struct {
-		Level   string
-		Backend string
-		Path    string
-	}
-	if err := unmarshal(&logLevel); err != nil {
-		return err
-	}
-	ll.Path = logLevel.Path
-	backend, err := parseBackend(logLevel.Backend)
-	if err != nil {
-		return err
-	}
-	ll.Backend = backend
-	level, err := parseLoglevel(logLevel.Level)
-	if err != nil {
-		return err
-	}
-	ll.LogLevel = level
-	return nil
-}
-
-// UnmarshalYAML yaml deserialization for MethodLimits
-func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// This should just work, not be fast
-	var parsed methodLimits
-
-	parsed.ExecTimeout = -1
-	parsed.MaxResponse = -1
-	if err := unmarshal(&parsed); err != nil {
-		return err
-	}
-	parsed.ExecTimeout *= time.Millisecond
-	*l = MethodLimits(parsed)
-
-	return nil
-}
-
-// UnmarshalYAML ignore
-func (w *includeConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var mapType map[string]bool
-	var stringType string
-
-	if err := unmarshal(&mapType); err == nil {
-		if len(mapType) != 1 {
-			return errors.New("Invalid include definition")
-		}
-		for k, v := range mapType {
-			w.Name = k
-			w.Required = v
-		}
-		return nil
-	}
-
-	if err := unmarshal(&stringType); err != nil {
-		return err
-	}
-	w.Required = true
-	w.Name = stringType
-	return nil
-}
 func parseBindType(bindType string) (BindType, error) {
 	switch strings.ToLower(bindType) {
 	case "http":
@@ -316,29 +247,6 @@ func parseBindType(bindType string) (BindType, error) {
 	}
 }
 
-// UnmarshalYAML ignore
-func (w *BindType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var bindType string
-	var err error
-	if err = unmarshal(&bindType); err != nil {
-		return err
-	}
-	*w, err = parseBindType(bindType)
-	return err
-}
-
-// UnmarshalYAML ignore
-func (w *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var value string
-	var err error
-	if err = unmarshal(&value); err != nil {
-		return err
-	}
-
-	*w, err = parseEncoding(value)
-	return err
-}
-
 func parseMethodParamType(value string) (MethodParamType, error) {
 	switch strings.ToLower(value) {
 	case "string":
@@ -350,17 +258,6 @@ func parseMethodParamType(value string) (MethodParamType, error) {
 	default:
 		return String, errors.New("Unknown type")
 	}
-}
-
-// UnmarshalYAML ignore
-func (w *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var value string
-	var err error
-	if err = unmarshal(&value); err != nil {
-		return err
-	}
-	*w, err = parseMethodParamType(value)
-	return err
 }
 
 func fromVal(value config.Value) (methodArgs, error) {
@@ -386,38 +283,6 @@ func fromVal(value config.Value) (methodArgs, error) {
 	return out, err
 }
 
-// UnmarshalYAML ignore
-func (m *methodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var plainText string
-	var structure struct {
-		Param string
-		// Check what was it
-		Skip bool
-	}
-	var array []methodArgs
-
-	if unmarshal(&plainText) == nil {
-		m.Param = plainText
-		m.Static = true
-		m.Skip = false
-		return nil
-	}
-	var err error
-	if err = unmarshal(&structure); err == nil {
-		m.Param = structure.Param
-		m.Skip = structure.Skip
-		m.Static = false
-		return nil
-	}
-	if err = unmarshal(&array); err == nil {
-		m.Child = array
-		m.compound = true
-		return nil
-	}
-	log.Crit("err", "err", err)
-	panic(err)
-}
-
 func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
 	if conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
@@ -426,48 +291,6 @@ func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
 		return passOk && loginOk
 	}
 	return true
-}
-
-func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
-	fileInfo, err := os.Stat(info.Name)
-
-	if os.IsNotExist(err) {
-		if info.Required {
-			return err
-		}
-		log.Warn("Optional config not found", "path", info.Name)
-		return nil
-	}
-
-	if fileInfo.IsDir() {
-		if entries, err := ioutil.ReadDir(info.Name); err == nil {
-			for _, finfo := range entries {
-				if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
-					// first field doesn't matter - we are including files from directory so
-					// they should exists
-					if err := conf.includesFromConf(includeConfig{true, filepath.Join(info.Name, finfo.Name())}); err != nil {
-						return err
-					}
-				}
-			}
-		} else {
-			return err
-		}
-	} else {
-		konfig := NewConfig()
-		err := konfig.readConfig(info.Name, true)
-		if err != nil {
-			return err
-		}
-		merged, e := merger.Merge(conf, konfig)
-		if e != nil {
-			return e
-		}
-		// YES, I trust myself
-		cast, _ := merged.(*RupicolaConfig)
-		*conf = *cast
-	}
-	return nil
 }
 
 func aggregateArgs(a methodArgs, b map[string]bool) {
@@ -503,23 +326,6 @@ func (m *MethodDef) Validate() error {
 	return nil
 }
 
-func (conf *RupicolaConfig) readConfig(configFilePath string, recursive bool) error {
-	by, err := ioutil.ReadFile(configFilePath)
-	if err := yaml.UnmarshalStrict(by, conf); err != nil {
-		return err
-	}
-
-	if recursive {
-		for _, inc := range conf.Include {
-			if err := conf.includesFromConf(inc); err != nil {
-				return err
-			}
-		}
-	}
-
-	return err
-}
-
 // NewConfig - create configuration with default values
 func NewConfig() *RupicolaConfig {
 	var cfg RupicolaConfig
@@ -528,6 +334,7 @@ func NewConfig() *RupicolaConfig {
 	cfg.Limits = Limits{10000, 0, 5242880, 5242880}
 	return &cfg
 }
+
 func shamefullFileModeFix(inout *os.FileMode) error {
 	// Well yeah, this is ugly bug originating
 	// from first version it uses DEC values insted OCT (no 0 prefix)
@@ -584,17 +391,14 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	c.Methods = make(map[string]*MethodDef)
 	for methodName, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
-		c.Methods[methodName] = meth
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
 		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
 		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0) * time.Second
 		meth.InvokeInfo.Exec = v.Get("invoke", "exec").String("")
-		gid := v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
-		meth.InvokeInfo.RunAs.GID = &gid
-		uid := v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
-		meth.InvokeInfo.RunAs.UID = &uid
+		meth.InvokeInfo.RunAs.GID = v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
+		meth.InvokeInfo.RunAs.UID = v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
 		args := v.Get("invoke", "args").Array(nil)
 		if len(args) != 0 {
 			meth.InvokeInfo.Args = make([]methodArgs, len(args))
@@ -618,6 +422,10 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 				meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype}
 			}
 		}
+		if err = meth.Validate(); err != nil {
+			return nil, err
+		}
+		c.Methods[methodName] = meth
 	}
 	logsSecrion := x.Get("log")
 	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").String(""))
@@ -629,63 +437,6 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		return nil, err
 	}
 	c.Log.Path = logsSecrion.Get("path").String("")
-
-	cfg := NewConfig()
-	err = cfg.readConfig(configFilePath, true)
-
-	if err != nil {
-		return cfg, err
-	}
-
-	for k, v := range cfg.Methods {
-		v.logger = log.New("method", k)
-		v.logger.Debug("method info", "streamed", v.Streamed)
-		if err := v.Validate(); err != nil {
-			return nil, err
-		}
-		if v.Limits == nil {
-			v.Limits = &MethodLimits{-1, -1}
-		}
-		// If Gid or Uid is empty assign it from current process
-		// We cant use 0 as empty (this is root on unix, and someone could set it)
-		if v.InvokeInfo.RunAs.GID == nil {
-			tmp := uint32(os.Getgid())
-			v.InvokeInfo.RunAs.GID = &tmp
-		}
-
-		if v.InvokeInfo.RunAs.UID == nil {
-			tmp := uint32(os.Getuid())
-			v.InvokeInfo.RunAs.UID = &tmp
-		}
-
-		v.InvokeInfo.Delay *= time.Second
-	}
-	for _, bind := range cfg.Protocol.Bind {
-		if bind.Mode == 0 {
-			bind.Mode = 0666
-		} else {
-			if err = shamefullFileModeFix(&bind.Mode); err != nil {
-				log.Error("FileMode parse failed", "address", bind.Address, "mode", bind.Mode)
-				return nil, err
-			}
-		}
-		// Now set proper UID/GID
-		if bind.UID != nil || bind.GID != nil {
-
-			if bind.UID == nil {
-				uid := os.Getuid()
-				bind.UID = &uid
-			}
-
-			if bind.GID == nil {
-				gid := os.Getgid()
-				bind.GID = &gid
-			}
-		}
-	}
-	cfg.Limits.ExecTimeout *= time.Millisecond
-	cfg.Limits.ReadTimeout *= time.Millisecond
-
 	return c, err
 }
 
