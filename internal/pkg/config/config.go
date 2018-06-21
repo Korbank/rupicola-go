@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -15,10 +14,10 @@ import (
 )
 
 var (
-	ErrStub    = errors.New("X")
-	EmptyValue = value{}
+	emptyValue = value{}
 )
 
+// Value represents any underlying value
 type Value interface {
 	Int32(def int32) int32
 	Uint32(def uint32) uint32
@@ -31,6 +30,9 @@ type Value interface {
 	Get(key ...string) Value
 	get(key string) Value
 	IsValid() bool
+	IsArray() bool
+	IsMap() bool
+	Raw() interface{}
 }
 
 type value struct {
@@ -39,6 +41,15 @@ type value struct {
 	Other interface{}
 }
 
+func (v *value) IsArray() bool {
+	return v.Lista != nil
+}
+func (v *value) IsMap() bool {
+	return v.Mapa != nil
+}
+func (v *value) Raw() interface{} {
+	return v.Other
+}
 func (v *value) Uint32(def uint32) uint32 {
 	return uint32(v.Int64(int64(def)))
 }
@@ -113,15 +124,12 @@ func valFrom(this interface{}) Value {
 	var val = new(value)
 	switch cast := this.(type) {
 	case map[interface{}]interface{}:
-		log.Println("MAP")
 		val.Mapa = mapFrom(cast)
 		break
 	case []interface{}:
-		log.Println("Array")
 		val.Lista = cast
 		break
 	default:
-		log.Println("End is nigh")
 		val.Other = this
 		break
 	}
@@ -129,11 +137,11 @@ func valFrom(this interface{}) Value {
 }
 func (v *value) get(key string) Value {
 	if v.Mapa == nil {
-		return &EmptyValue
+		return &emptyValue
 	}
 	val, has := v.Mapa[key]
 	if !has {
-		return &EmptyValue
+		return &emptyValue
 	}
 	return val
 }
@@ -175,12 +183,22 @@ func (v *value) Int32(def int32) int32 {
 	return int32(big)
 }
 
-type Config struct {
+// Config uration
+type Config interface {
+	Get(key ...string) Value
+	Load(path ...string) error
+}
+type config struct {
 	root value
 	def  value
 }
 
-func (c *Config) Get(key ...string) Value {
+// NewConfig returns empty configuration
+func NewConfig() Config {
+	return new(config)
+}
+
+func (c *config) Get(key ...string) Value {
 	var currentValue Value
 	currentValue = &c.root
 	for _, k := range key {
@@ -188,6 +206,7 @@ func (c *Config) Get(key ...string) Value {
 	}
 	return currentValue
 }
+
 func searchFiles(path string, required bool) (out []string, err error) {
 	fileInfo, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -215,13 +234,14 @@ func searchFiles(path string, required bool) (out []string, err error) {
 	}
 	return
 }
-func (c *Config) Load(paths ...string) error {
-	pathToVisit := new(Stack)
+
+func (c *config) Load(paths ...string) error {
+	pathToVisit := new(stack)
 	for _, path := range paths {
-		pathToVisit.Push(path)
+		pathToVisit.push(path)
 	}
-	for pathToVisit.Len() != 0 {
-		path := pathToVisit.Pop()
+	for pathToVisit.len() != 0 {
+		path := pathToVisit.pop()
 		log.Println("loading", path)
 		bytes, e := ioutil.ReadFile(path)
 		if e != nil {
@@ -259,7 +279,7 @@ func (c *Config) Load(paths ...string) error {
 				}
 				for _, f := range fs {
 					klon := f
-					pathToVisit.Push(klon)
+					pathToVisit.push(klon)
 				}
 			}
 		}

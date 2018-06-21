@@ -8,12 +8,12 @@ func TestConfig_Load(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
-		c       *Config
+		c       *config
 		args    args
 		wantErr bool
 	}{
 		// TODO: Add test cases.
-		{"name", new(Config), args{"../../../sample.conf"}, false},
+		{"name", new(config), args{"../../../sample.conf"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
