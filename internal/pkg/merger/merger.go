@@ -2,7 +2,6 @@ package merger
 
 import (
 	"errors"
-	"log"
 	"reflect"
 	"strings"
 )
@@ -129,25 +128,21 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 			switch btype.Kind() {
 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 				if btype.Int() == 0 {
-					log.Println("int 0, keep previous", atype.Int())
 					out = atype
 					return
 				}
 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 				if btype.Uint() == 0 {
-					log.Println("uint 0, keep previouse", atype.Uint())
 					out = atype
 					return
 				}
 			case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
 				if btype.IsNil() {
-					log.Println("ptr 0, keep previouse")
 					out = atype
 					return
 				}
 			case reflect.String:
 				if btype.Len() == 0 {
-					log.Println("str 0, keep previouse", atype.String())
 					out = atype
 					return
 				}
