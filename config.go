@@ -50,9 +50,9 @@ type Backend int8
 
 const (
 	// BackendStdout write to stdout
-	BackendStdout = 1 << iota
+	BackendStdout Backend = 1 << iota
 	// BackendSyslog write to syslog
-	BackendSyslog = 1 << iota
+	BackendSyslog Backend = 1 << iota
 )
 
 const (
@@ -363,6 +363,29 @@ func (w *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error
 	return err
 }
 
+func fromVal(value config.Value) (methodArgs, error) {
+	var out methodArgs
+
+	var err error
+	if value.IsMap() {
+		out.Param = value.Get("param").String("")
+		out.Skip = value.Get("skip").Bool(false)
+		out.Static = false
+	} else if value.IsArray() {
+		asArray := value.Array(nil)
+		out.Child = make([]methodArgs, len(asArray))
+		for i, m := range asArray {
+			out.Child[i], err = fromVal(m)
+		}
+		out.compound = true
+	} else {
+		out.Param = fmt.Sprint(value.Raw())
+		out.Static = true
+		out.Skip = false
+	}
+	return out, err
+}
+
 // UnmarshalYAML ignore
 func (m *methodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var plainText string
@@ -521,7 +544,7 @@ func shamefullFileModeFix(inout *os.FileMode) error {
 
 // ReadConfig from file
 func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
-	x := new(config.Config)
+	x := config.NewConfig()
 	if err := x.Load(configFilePath); err != nil {
 		return nil, err
 	}
@@ -529,8 +552,8 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	c := NewConfig()
 	limitsSection := x.Get("limits")
 	c.Limits = Limits{
-		limitsSection.Get("read-timeout").Duration(10000),
-		limitsSection.Get("exec-timeout").Duration(0),
+		limitsSection.Get("read-timeout").Duration(10000) * time.Millisecond,
+		limitsSection.Get("exec-timeout").Duration(0) * time.Millisecond,
 		limitsSection.Get("payload-size").Uint32(5242880),
 		limitsSection.Get("max-response").Uint32(5242880),
 	}
@@ -548,7 +571,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		GID := int(bind.Get("gid").Int32(int32(os.Getgid())))
 		b.GID = &GID
 		b.Key = bind.Get("key").String("")
-		b.Mode = os.FileMode(bind.Get("mode").Uint32(660)) // need love...
+		b.Mode = os.FileMode(bind.Get("mode").Uint32(666)) // need love...
 		shamefullFileModeFix(&b.Mode)
 
 		b.Port = uint16(bind.Get("port").Int32(0))
@@ -558,32 +581,44 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		c.Protocol.Bind = append(c.Protocol.Bind, b)
 	}
 	methodsSection := x.Get("methods")
-
-	for k, v := range methodsSection.Map(nil) {
+	c.Methods = make(map[string]*MethodDef)
+	for methodName, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
+		c.Methods[methodName] = meth
 		meth.Limits = new(MethodLimits)
-		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1)
+		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
 		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
-		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0)
+		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0) * time.Second
 		meth.InvokeInfo.Exec = v.Get("invoke", "exec").String("")
 		gid := v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
 		meth.InvokeInfo.RunAs.GID = &gid
 		uid := v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
 		meth.InvokeInfo.RunAs.UID = &uid
+		args := v.Get("invoke", "args").Array(nil)
+		if len(args) != 0 {
+			meth.InvokeInfo.Args = make([]methodArgs, len(args))
+			for i, a := range args {
+				meth.InvokeInfo.Args[i], err = fromVal(a)
+			}
+		}
+
 		meth.Output = v.Get("output")
 		meth.Private = v.Get("private").Bool(false)
 		meth.Streamed = v.Get("streamed").Bool(false)
 		methParams := v.Get("params").Map(nil)
-		for k, v := range methParams {
-			tyype := v.Get("type").String("") // required
-			optional := v.Get("optional").Bool(false)
-			mepa := MethodParam{Optional: optional, Type: parseMethodParamType(tyype)}
+		if len(methParams) != 0 {
+			meth.Params = make(map[string]MethodParam)
+			for paramName, v := range methParams {
+				tyype, err := parseMethodParamType(v.Get("type").String("")) // required
+				if err != nil {
+					log.Error("required field missing")
+				}
+				optional := v.Get("optional").Bool(false)
+				meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype}
+			}
 		}
-		//meth.Params =
-		c.Methods[k] = meth
 	}
-
 	logsSecrion := x.Get("log")
 	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").String(""))
 	if err != nil {
@@ -650,7 +685,8 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	}
 	cfg.Limits.ExecTimeout *= time.Millisecond
 	cfg.Limits.ReadTimeout *= time.Millisecond
-	return cfg, err
+
+	return c, err
 }
 
 // CheckParams ensures that all required paramters are present and have valid type
