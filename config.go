@@ -389,6 +389,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	c.Methods = make(map[string]*MethodDef)
 	for methodName, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
+		meth.logger = log.New(methodName)
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
