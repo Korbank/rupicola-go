@@ -75,7 +75,6 @@ type LogDef struct {
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
-	Include  []includeConfig       `merger:""`
 	Protocol Protocol              `merger:""`
 	Limits   Limits                `merger:""`
 	Log      LogDef                `merger:""`
@@ -145,11 +144,6 @@ type methodArgs struct {
 	Static   bool
 	compound bool
 	Child    []methodArgs
-}
-
-type includeConfig struct {
-	Required bool
-	Name     string
 }
 
 const (
