@@ -437,6 +437,7 @@ func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 		switch err.(type) {
 		case *json.UnmarshalTypeError:
 			err = ErrInvalidRequest
+		case *_Error: //do nothing
 		default:
 			err = ErrParseError
 		}
