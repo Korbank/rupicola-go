@@ -71,7 +71,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 			MinVersion:               tls.VersionTLS12,
 			PreferServerCipherSuites: true,
 		}
-		log.Info("atarting listener", "type", "https", "address", bind.Address, "port", bind.Port)
+		log.Info("starting listener", "type", "https", "address", bind.Address, "port", bind.Port)
 		ln, err := ListenKeepAlive("tcp", srv.Addr)
 		if err != nil {
 			return err
@@ -80,7 +80,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 
 	case Unix:
 		//todo: check
-		log.Info("atarting listener", "type", "unix", "address", bind.Address)
+		log.Info("starting listener", "type", "unix", "address", bind.Address)
 		srv.Addr = bind.Address
 		// Change umask to ensure socker is created with right
 		// permissions (at this point no other IO opeations are running)
@@ -108,8 +108,8 @@ type failureReader struct {
 }
 
 func (f *failureReader) Close() error {
-	return f
+	return f.error
 }
 func (f *failureReader) Read([]byte) (int, error) {
-	return 0, f
+	return 0, f.error
 }
