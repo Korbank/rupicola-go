@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/config"
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
+	"github.com/mkocot/pwhash"
 
 	log "github.com/inconshreveable/log15"
 
@@ -52,11 +52,7 @@ const (
 const (
 	// LLOff Disable log
 	LLOff LogLevel = iota
-
-	// // LLTrace most detailed log level (same as LLDebug)
-	// LLTrace
-
-	// LLDebug most detailed log level (same as LLTrace)
+	// LLDebug most detailed log level (same as Trace)
 	LLDebug
 	// LLInfo only info and above
 	LLInfo
@@ -75,10 +71,10 @@ type LogDef struct {
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
-	Protocol Protocol              `merger:""`
-	Limits   Limits                `merger:""`
-	Log      LogDef                `merger:""`
-	Methods  map[string]*MethodDef `merger:""`
+	Protocol Protocol
+	Limits   Limits
+	Log      LogDef
+	Methods  map[string]*MethodDef
 }
 
 // MethodParam ...
