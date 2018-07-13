@@ -170,25 +170,33 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 func registerCleanupAtExit(config *RupicolaConfig) {
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
+	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
 	go func(c chan os.Signal) {
 		// todo: configuration reloading
 		// Wait for a SIGINT or SIGKILL:
-		sig := <-c
-		log.Info("Caught signal: shutting down.", "signal", sig)
-		// Stop listening (and unlink the socket if unix type):
-		for _, bind := range config.Protocol.Bind {
-			if bind.Type != Unix {
-				continue
-			}
-			if err := os.Remove(bind.Address); err != nil {
-				log.Error("Unable to unlink", "address", bind.Address, "err", err)
-			} else {
-				log.Debug("Unlinked UNIX address", "address", bind.Address)
+		for {
+			sig := <-c
+			log.Info("Caught signal: shutting down.", "signal", sig)
+
+			switch sig {
+			case syscall.SIGHUP:
+				log.Warn("TODO: reloading config, please restart process")
+			default:
+				// Stop listening (and unlink the socket if unix type):
+				for _, bind := range config.Protocol.Bind {
+					if bind.Type != Unix {
+						continue
+					}
+					if err := os.Remove(bind.Address); err != nil {
+						log.Error("Unable to unlink", "address", bind.Address, "err", err)
+					} else {
+						log.Debug("Unlinked UNIX address", "address", bind.Address)
+					}
+				}
+				// And we're done:
+				os.Exit(0)
 			}
 		}
-		// And we're done:
-		os.Exit(0)
 	}(sigc)
 }
 
