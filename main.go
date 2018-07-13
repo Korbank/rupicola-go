@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"rupicolarpc"
 	"syscall"
+
+	"github.com/mkocot/rupicolarpc"
 
 	log "github.com/inconshreveable/log15"
 )

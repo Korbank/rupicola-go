@@ -17,7 +17,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 
-	"rupicolarpc"
+	"github.com/mkocot/rupicolarpc"
 )
 
 // Limits ...
