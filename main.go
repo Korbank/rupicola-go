@@ -160,6 +160,9 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	ip := net.ParseIP(host)
 	if ip.IsLoopback() {
 		userData.allowPrivate = child.bind.AllowPrivate
+		if !userData.allowPrivate {
+			log.Debug("Request from loopback, but bindpoint will require authentification data", "bindpoint", child.bind.Address)
+		}
 	}
 
 	if !userData.isAuthorized && !userData.allowPrivate {

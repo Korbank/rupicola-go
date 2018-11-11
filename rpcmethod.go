@@ -21,7 +21,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		castedContext, ok = uncastedContext.(*rupicolaRPCContext)
 	}
 	if ok {
-		if !castedContext.isAuthorized && castedContext.allowPrivate && m.Private {
+		if !castedContext.isAuthorized && (!castedContext.allowPrivate || !m.Private) {
 			castedContext.shouldRequestAuth = true
 			log.Warn("Unauthorized")
 			return nil, nil, rpcUnauthorizedError
@@ -30,15 +30,21 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		log.Crit("Provided context is not pointer")
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
 	}
-
-	if err := m.CheckParams(req); err != nil {
+	// We will create this when needed
+	//var additionalParams map[string]interface{}
+	//	// Check if required arguments are present
+	params := req.Params()
+	if params == nil {
+		params = make(map[string]interface{})
+	}
+	if err := m.CheckParams(params); err != nil {
 		return nil, nil, err
 	}
 
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg.evalueateArgs(req.Params(), buffer)
+		skip, err := arg.evalueateArgs(params, buffer)
 		if err != nil {
 			log.Error("error", "err", err)
 			return nil, nil, err

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -79,8 +80,9 @@ type RupicolaConfig struct {
 
 // MethodParam ...
 type MethodParam struct {
-	Type     MethodParamType
-	Optional bool
+	Type       MethodParamType
+	Optional   bool
+	defaultVal config.Value
 }
 
 // RunAs ...
@@ -294,15 +296,19 @@ func aggregateArgs(a methodArgs, b map[string]bool) {
 
 // Validate ensure correct method definition
 func (m *MethodDef) Validate() error {
-	definedParams := m.Params
+	definedParams := make(map[string]bool)
 	definedArgs := make(map[string]bool)
 	for _, v := range m.InvokeInfo.Args {
 		aggregateArgs(v, definedArgs)
 	}
 
+	for k := range m.Params {
+		definedParams[k] = true
+	}
+
 	for k := range definedArgs {
 		if _, has := definedParams[k]; has {
-			delete(definedParams, k)
+			definedParams[k] = false
 		} else {
 			// Fatal, or just return error?
 			m.logger.Error("undeclared param", "name", k)
@@ -310,8 +316,10 @@ func (m *MethodDef) Validate() error {
 		}
 	}
 
-	for k := range definedParams {
-		m.logger.Warn("unused parameter defined", "name", k)
+	for k, v := range definedParams {
+		if v {
+			m.logger.Warn("unused parameter defined", "name", k)
+		}
 	}
 	return nil
 }
@@ -379,7 +387,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	c.Methods = make(map[string]*MethodDef)
 	for methodName, v := range methodsSection.Map(nil) {
 		meth := new(MethodDef)
-		meth.logger = log.New(methodName)
+		meth.logger = log.New("method", methodName)
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
@@ -408,7 +416,8 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 					log.Error("required field missing")
 				}
 				optional := v.Get("optional").Bool(false)
-				meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype}
+				defaultVal := v.Get("default")
+				meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype, defaultVal: defaultVal}
 			}
 		}
 		if err = meth.Validate(); err != nil {
@@ -430,14 +439,18 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 }
 
 // CheckParams ensures that all required paramters are present and have valid type
-func (m *MethodDef) CheckParams(req rupicolarpc.JsonRpcRequest) error {
-	// Check if required arguments are present
-	params := req.Params()
+func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 	for name, arg := range m.Params {
 		val, ok := params[name]
 		if !ok && !arg.Optional {
 			m.logger.Error("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
+		}
+		// add missing optional arguments with defined default value
+		if arg.Optional && !ok {
+			// Initialize if required
+			val = arg.defaultVal.Raw()
+			params[name] = val
 		}
 
 		switch arg.Type {
@@ -451,7 +464,7 @@ func (m *MethodDef) CheckParams(req rupicolarpc.JsonRpcRequest) error {
 			ok = false
 		}
 		if !ok {
-			m.logger.Error("invalid param")
+			m.logger.Error("invalid param", "requested", arg.Type, "received", reflect.TypeOf(val))
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 	}
@@ -467,8 +480,10 @@ func (m *methodArgs) evalueateArgs(arguments map[string]interface{}, output *byt
 	} else {
 		var value string
 		valueRaw, has := arguments[m.Param]
-		// Convert value to string
-		value = fmt.Sprint(valueRaw)
+		// Convert value to string and skip converting nil to <nil>
+		if valueRaw != nil {
+			value = fmt.Sprint(valueRaw)
+		}
 
 		if m.Param == "self" {
 			has = true
