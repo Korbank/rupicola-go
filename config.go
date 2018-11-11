@@ -243,7 +243,7 @@ func parseMethodParamType(value string) (MethodParamType, error) {
 	switch strings.ToLower(value) {
 	case "string":
 		return String, nil
-	case "integer", "int":
+	case "integer", "int", "number":
 		return Int, nil
 	case "bool", "boolean":
 		return Bool, nil
@@ -413,7 +413,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 			for paramName, v := range methParams {
 				tyype, err := parseMethodParamType(v.Get("type").String("")) // required
 				if err != nil {
-					log.Error("required field missing")
+					meth.logger.Error("required field missing", "name", "type")
 				}
 				optional := v.Get("optional").Bool(false)
 				defaultVal := v.Get("default")
@@ -430,7 +430,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").String(""))
+	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").String("warn"))
 	if err != nil {
 		return nil, err
 	}
