@@ -4,38 +4,33 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/merger"
-
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/pwhash"
+	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/config"
+	"github.com/mkocot/pwhash"
 
 	log "github.com/inconshreveable/log15"
 
 	"crypto/subtle"
 	"encoding/json"
-	"path/filepath"
 
-	"rupicolarpc"
-
-	"gopkg.in/yaml.v2"
+	"github.com/mkocot/rupicolarpc"
 )
 
 // Limits ...
 type Limits struct {
-	ReadTimeout time.Duration `yaml:"read-timeout,omitempty"`
-	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
-	PayloadSize uint32        `yaml:"payload-size,omitempty"`
-	MaxResponse uint32        `yaml:"max-response,omitempty"`
+	ReadTimeout time.Duration
+	ExecTimeout time.Duration
+	PayloadSize uint32
+	MaxResponse uint32
 }
 
 type methodLimits struct {
-	ExecTimeout time.Duration `yaml:"exec-timeout,omitempty"`
-	MaxResponse int64         `yaml:"max-response,omitempty"`
+	ExecTimeout time.Duration
+	MaxResponse int64
 }
 
 // MethodLimits define execution limits for method
@@ -49,19 +44,15 @@ type Backend int8
 
 const (
 	// BackendStdout write to stdout
-	BackendStdout = 1 << iota
+	BackendStdout Backend = 1 << iota
 	// BackendSyslog write to syslog
-	BackendSyslog = 1 << iota
+	BackendSyslog Backend = 1 << iota
 )
 
 const (
 	// LLOff Disable log
 	LLOff LogLevel = iota
-
-	// // LLTrace most detailed log level (same as LLDebug)
-	// LLTrace
-
-	// LLDebug most detailed log level (same as LLTrace)
+	// LLDebug most detailed log level (same as Trace)
 	LLDebug
 	// LLInfo only info and above
 	LLInfo
@@ -80,11 +71,10 @@ type LogDef struct {
 
 // RupicolaConfig ...
 type RupicolaConfig struct {
-	Include  []includeConfig       `merger:""`
-	Protocol Protocol              `merger:""`
-	Limits   Limits                `merger:""`
-	Log      LogDef                `merger:""`
-	Methods  map[string]*MethodDef `merger:""`
+	Protocol Protocol
+	Limits   Limits
+	Log      LogDef
+	Methods  map[string]*MethodDef
 }
 
 // MethodParam ...
@@ -95,8 +85,8 @@ type MethodParam struct {
 
 // RunAs ...
 type RunAs struct {
-	UID *uint32
-	GID *uint32
+	UID uint32
+	GID uint32
 }
 
 // MethodDef ...
@@ -109,8 +99,8 @@ type MethodDef struct {
 		Exec  string
 		Delay time.Duration
 		Args  []methodArgs
-		RunAs RunAs `yaml:"run-as,omitempty"`
-	} `yaml:"invoke"`
+		RunAs RunAs
+	}
 	// Pointer because we need to know when its unsed
 	Limits *MethodLimits
 	logger log.Logger
@@ -129,19 +119,19 @@ type BindType int
 
 const (
 	// Utf8 - Default message encoding
-	Utf8 MethodEncoding = 0
+	Utf8 MethodEncoding = iota
 	// Base64 - Encode message as base64
-	Base64 = 1
+	Base64
 	// Base85 - Encode message as base85
-	Base85 = 2
+	Base85
 )
 const (
 	// String - Method parameter should be string
-	String MethodParamType = 0
+	String MethodParamType = iota
 	// Int - Method parameter should be int
-	Int = 1
+	Int
 	// Bool - Method parameter should be bool
-	Bool = 2
+	Bool
 )
 
 type methodArgs struct {
@@ -150,11 +140,6 @@ type methodArgs struct {
 	Static   bool
 	compound bool
 	Child    []methodArgs
-}
-
-type includeConfig struct {
-	Required bool
-	Name     string
 }
 
 const (
@@ -171,15 +156,15 @@ type Bind struct {
 	Type         BindType
 	Address      string
 	Port         uint16
-	AllowPrivate bool `yaml:"allow_private"`
+	AllowPrivate bool
 	// Only for HTTPS
 	Cert string
 	// Only for HTTPS
 	Key string
 	// Only for Unix [default=660]
 	Mode os.FileMode
-	UID  *int
-	GID  *int
+	UID  int
+	GID  int
 }
 
 // Protocol - define bind points, auth and URI paths
@@ -189,7 +174,7 @@ type Protocol struct {
 	AuthBasic struct {
 		Login    string
 		Password string
-	} `yaml:"auth-basic"`
+	}
 
 	URI struct {
 		Streamed string
@@ -197,178 +182,95 @@ type Protocol struct {
 	}
 }
 
-// UnmarshalYAML is unmarshaling from yaml for LogDef
-func (ll *LogDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var logLevel struct {
-		Level   string
-		Backend string
-		Path    string
-	}
-	if err := unmarshal(&logLevel); err != nil {
-		return err
-	}
-	ll.Path = logLevel.Path
-	switch strings.ToLower(logLevel.Backend) {
+func parseBackend(backend string) (Backend, error) {
+	switch strings.ToLower(backend) {
 	case "syslog":
-		ll.Backend = BackendSyslog
+		return BackendSyslog, nil
 	case "stdout":
 		fallthrough
 	case "":
-		ll.Backend = BackendStdout
+		return BackendStdout, nil
 	default:
-		return fmt.Errorf("Unknown backend %s", logLevel.Backend)
+		return BackendStdout, fmt.Errorf("Unknown backend %s", backend)
 	}
-	switch strings.ToLower(logLevel.Level) {
+}
+func parseLoglevel(level string) (LogLevel, error) {
+	switch strings.ToLower(level) {
 	case "off":
-		ll.LogLevel = LLOff
+		return LLOff, nil
 	case "trace":
-		ll.LogLevel = LLDebug
+		return LLDebug, nil
 	case "debug":
-		ll.LogLevel = LLDebug
+		return LLDebug, nil
 	case "info":
-		ll.LogLevel = LLInfo
+		return LLInfo, nil
 	case "warn":
-		ll.LogLevel = LLWarn
+		return LLWarn, nil
 	case "error":
-		ll.LogLevel = LLError
+		return LLError, nil
 	default:
-		return fmt.Errorf("unknown log level: %s", logLevel.Level)
+		return LLOff, fmt.Errorf("unknown log level: %s", level)
 	}
-	return nil
 }
-
-// UnmarshalYAML yaml deserialization for MethodLimits
-func (l *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// This should just work, not be fast
-	var parsed methodLimits
-
-	parsed.ExecTimeout = -1
-	parsed.MaxResponse = -1
-	if err := unmarshal(&parsed); err != nil {
-		return err
-	}
-	parsed.ExecTimeout *= time.Millisecond
-	*l = MethodLimits(parsed)
-
-	return nil
-}
-
-// UnmarshalYAML ignore
-func (w *includeConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var mapType map[string]bool
-	var stringType string
-
-	if err := unmarshal(&mapType); err == nil {
-		if len(mapType) != 1 {
-			return errors.New("Invalid include definition")
-		}
-		for k, v := range mapType {
-			w.Name = k
-			w.Required = v
-		}
-		return nil
-	}
-
-	if err := unmarshal(&stringType); err != nil {
-		return err
-	}
-	w.Required = true
-	w.Name = stringType
-	return nil
-}
-
-// UnmarshalYAML ignore
-func (w *BindType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var bindType string
-	if err := unmarshal(&bindType); err != nil {
-		return err
-	}
-	switch strings.ToLower(bindType) {
-	case "http":
-		*w = HTTP
-	case "https":
-		*w = HTTPS
-	case "unix":
-		*w = Unix
-	default:
-		return fmt.Errorf("Unknown bind type %v", bindType)
-	}
-	return nil
-}
-
-// UnmarshalYAML ignore
-func (w *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var value string
-	if err := unmarshal(&value); err != nil {
-		return err
-	}
+func parseEncoding(value string) (MethodEncoding, error) {
 	value = strings.ToLower(value)
 	switch value {
 	case "base64":
-		*w = Base64
-	case "utf-8":
-	case "utf8":
-		*w = Utf8
+		return Base64, nil
+	case "utf-8", "utf8":
+		return Utf8, nil
 	default:
-		return errors.New("Unknown output type")
+		return Utf8, errors.New("Unknown output type")
 	}
-	return nil
 }
 
-// UnmarshalYAML ignore
-func (w *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var value string
-
-	if err := unmarshal(&value); err != nil {
-		return err
+func parseBindType(bindType string) (BindType, error) {
+	switch strings.ToLower(bindType) {
+	case "http":
+		return HTTP, nil
+	case "https":
+		return HTTPS, nil
+	case "unix":
+		return Unix, nil
+	default:
+		return HTTP, fmt.Errorf("Unknown bind type %v", bindType)
 	}
+}
 
+func parseMethodParamType(value string) (MethodParamType, error) {
 	switch strings.ToLower(value) {
 	case "string":
-		*w = String
-	case "integer":
-	case "int":
-		*w = Int
-	case "bool":
-	case "boolean":
-		*w = Bool
+		return String, nil
+	case "integer", "int":
+		return Int, nil
+	case "bool", "boolean":
+		return Bool, nil
 	default:
-		return errors.New("Unknown type")
+		return String, errors.New("Unknown type")
 	}
-
-	return nil
 }
 
-// UnmarshalYAML ignore
-func (m *methodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var plainText string
-	var structure struct {
-		Param string
-		// Check what was it
-		Skip bool
-	}
-	var array []methodArgs
+func fromVal(value config.Value) (methodArgs, error) {
+	var out methodArgs
 
-	if unmarshal(&plainText) == nil {
-		m.Param = plainText
-		m.Static = true
-		m.Skip = false
-		return nil
-	}
 	var err error
-	if err = unmarshal(&structure); err == nil {
-		m.Param = structure.Param
-		m.Skip = structure.Skip
-		m.Static = false
-		return nil
+	if value.IsMap() {
+		out.Param = value.Get("param").String("")
+		out.Skip = value.Get("skip").Bool(false)
+		out.Static = false
+	} else if value.IsArray() {
+		asArray := value.Array(nil)
+		out.Child = make([]methodArgs, len(asArray))
+		for i, m := range asArray {
+			out.Child[i], err = fromVal(m)
+		}
+		out.compound = true
+	} else {
+		out.Param = fmt.Sprint(value.Raw())
+		out.Static = true
+		out.Skip = false
 	}
-	if err = unmarshal(&array); err == nil {
-		m.Child = array
-		m.compound = true
-		return nil
-	}
-	log.Crit("err", "err", err)
-	panic(err)
+	return out, err
 }
 
 func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
@@ -379,48 +281,6 @@ func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
 		return passOk && loginOk
 	}
 	return true
-}
-
-func (conf *RupicolaConfig) includesFromConf(info includeConfig) error {
-	fileInfo, err := os.Stat(info.Name)
-
-	if os.IsNotExist(err) {
-		if info.Required {
-			return err
-		}
-		log.Warn("Optional config not found", "path", info.Name)
-		return nil
-	}
-
-	if fileInfo.IsDir() {
-		if entries, err := ioutil.ReadDir(info.Name); err == nil {
-			for _, finfo := range entries {
-				if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
-					// first field doesn't matter - we are including files from directory so
-					// they should exists
-					if err := conf.includesFromConf(includeConfig{true, filepath.Join(info.Name, finfo.Name())}); err != nil {
-						return err
-					}
-				}
-			}
-		} else {
-			return err
-		}
-	} else {
-		konfig := NewConfig()
-		err := konfig.readConfig(info.Name, true)
-		if err != nil {
-			return err
-		}
-		merged, e := merger.Merge(conf, konfig)
-		if e != nil {
-			return e
-		}
-		// YES, I trust myself
-		cast, _ := merged.(*RupicolaConfig)
-		*conf = *cast
-	}
-	return nil
 }
 
 func aggregateArgs(a methodArgs, b map[string]bool) {
@@ -456,23 +316,6 @@ func (m *MethodDef) Validate() error {
 	return nil
 }
 
-func (conf *RupicolaConfig) readConfig(configFilePath string, recursive bool) error {
-	by, err := ioutil.ReadFile(configFilePath)
-	if err := yaml.UnmarshalStrict(by, conf); err != nil {
-		return err
-	}
-
-	if recursive {
-		for _, inc := range conf.Include {
-			if err := conf.includesFromConf(inc); err != nil {
-				return err
-			}
-		}
-	}
-
-	return err
-}
-
 // NewConfig - create configuration with default values
 func NewConfig() *RupicolaConfig {
 	var cfg RupicolaConfig
@@ -481,6 +324,7 @@ func NewConfig() *RupicolaConfig {
 	cfg.Limits = Limits{10000, 0, 5242880, 5242880}
 	return &cfg
 }
+
 func shamefullFileModeFix(inout *os.FileMode) error {
 	// Well yeah, this is ugly bug originating
 	// from first version it uses DEC values insted OCT (no 0 prefix)
@@ -497,62 +341,92 @@ func shamefullFileModeFix(inout *os.FileMode) error {
 
 // ReadConfig from file
 func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
-	cfg := NewConfig()
-	err := cfg.readConfig(configFilePath, true)
-
-	if err != nil {
-		return cfg, err
+	x := config.NewConfig()
+	if err := x.Load(configFilePath); err != nil {
+		return nil, err
 	}
 
-	for k, v := range cfg.Methods {
-		v.logger = log.New("method", k)
-		v.logger.Debug("method info", "streamed", v.Streamed)
-		if err := v.Validate(); err != nil {
+	c := NewConfig()
+	limitsSection := x.Get("limits")
+	c.Limits = Limits{
+		limitsSection.Get("read-timeout").Duration(10000) * time.Millisecond,
+		limitsSection.Get("exec-timeout").Duration(0) * time.Millisecond,
+		limitsSection.Get("payload-size").Uint32(5242880),
+		limitsSection.Get("max-response").Uint32(5242880),
+	}
+	var err error
+	protocolSection := x.Get("protocol")
+	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").String("")
+	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").String("")
+	c.Protocol.URI.RPC = protocolSection.Get("uri", "rpc").String("/jsonrpc")
+	c.Protocol.URI.Streamed = protocolSection.Get("uri", "streamed").String("/streaming")
+	for _, bind := range protocolSection.Get("bind").Array(nil) {
+		b := new(Bind)
+		b.Address = bind.Get("address").String("") // error on empty
+		b.AllowPrivate = bind.Get("allow-private").Bool(false)
+		b.Cert = bind.Get("cert").String("")
+		b.GID = int(bind.Get("gid").Int32(int32(os.Getgid())))
+		b.Key = bind.Get("key").String("")
+		b.Mode = os.FileMode(bind.Get("mode").Uint32(666)) // need love...
+		shamefullFileModeFix(&b.Mode)
+
+		b.Port = uint16(bind.Get("port").Int32(0))
+		b.Type, err = parseBindType(bind.Get("type").String(""))
+		b.UID = int(bind.Get("uid").Int32(int32(os.Getuid())))
+		c.Protocol.Bind = append(c.Protocol.Bind, b)
+	}
+	methodsSection := x.Get("methods")
+	c.Methods = make(map[string]*MethodDef)
+	for methodName, v := range methodsSection.Map(nil) {
+		meth := new(MethodDef)
+		meth.logger = log.New(methodName)
+		meth.Limits = new(MethodLimits)
+		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
+		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
+		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
+		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0) * time.Second
+		meth.InvokeInfo.Exec = v.Get("invoke", "exec").String("")
+		meth.InvokeInfo.RunAs.GID = v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
+		meth.InvokeInfo.RunAs.UID = v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
+		args := v.Get("invoke", "args").Array(nil)
+		if len(args) != 0 {
+			meth.InvokeInfo.Args = make([]methodArgs, len(args))
+			for i, a := range args {
+				meth.InvokeInfo.Args[i], err = fromVal(a)
+			}
+		}
+
+		meth.Output = v.Get("output")
+		meth.Private = v.Get("private").Bool(false)
+		meth.Streamed = v.Get("streamed").Bool(false)
+		methParams := v.Get("params").Map(nil)
+		if len(methParams) != 0 {
+			meth.Params = make(map[string]MethodParam)
+			for paramName, v := range methParams {
+				tyype, err := parseMethodParamType(v.Get("type").String("")) // required
+				if err != nil {
+					log.Error("required field missing")
+				}
+				optional := v.Get("optional").Bool(false)
+				meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype}
+			}
+		}
+		if err = meth.Validate(); err != nil {
 			return nil, err
 		}
-		if v.Limits == nil {
-			v.Limits = &MethodLimits{-1, -1}
-		}
-		// If Gid or Uid is empty assign it from current process
-		// We cant use 0 as empty (this is root on unix, and someone could set it)
-		if v.InvokeInfo.RunAs.GID == nil {
-			tmp := uint32(os.Getgid())
-			v.InvokeInfo.RunAs.GID = &tmp
-		}
-
-		if v.InvokeInfo.RunAs.UID == nil {
-			tmp := uint32(os.Getuid())
-			v.InvokeInfo.RunAs.UID = &tmp
-		}
-
-		v.InvokeInfo.Delay *= time.Second
+		c.Methods[methodName] = meth
 	}
-	for _, bind := range cfg.Protocol.Bind {
-		if bind.Mode == 0 {
-			bind.Mode = 0666
-		} else {
-			if err = shamefullFileModeFix(&bind.Mode); err != nil {
-				log.Error("FileMode parse failed", "address", bind.Address, "mode", bind.Mode)
-				return nil, err
-			}
-		}
-		// Now set proper UID/GID
-		if bind.UID != nil || bind.GID != nil {
-
-			if bind.UID == nil {
-				uid := os.Getuid()
-				bind.UID = &uid
-			}
-
-			if bind.GID == nil {
-				gid := os.Getgid()
-				bind.GID = &gid
-			}
-		}
+	logsSecrion := x.Get("log")
+	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").String(""))
+	if err != nil {
+		return nil, err
 	}
-	cfg.Limits.ExecTimeout *= time.Millisecond
-	cfg.Limits.ReadTimeout *= time.Millisecond
-	return cfg, err
+	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").String(""))
+	if err != nil {
+		return nil, err
+	}
+	c.Log.Path = logsSecrion.Get("path").String("")
+	return c, err
 }
 
 // CheckParams ensures that all required paramters are present and have valid type

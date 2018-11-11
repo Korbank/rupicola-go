@@ -6,8 +6,9 @@ import (
 	"encoding/base64"
 	"io"
 	"os/exec"
-	"rupicolarpc"
 	"time"
+
+	"github.com/mkocot/rupicolarpc"
 
 	log "github.com/inconshreveable/log15"
 )

@@ -2,16 +2,21 @@ package merger
 
 import (
 	"errors"
-	"log"
 	"reflect"
 	"strings"
 )
 
 var (
+	// ErrUnmergable returned when two objects are unmergable
 	ErrUnmergable = errors.New("Unmergable")
 )
 
-func merge_tag(a interface{}, b interface{}) {
+const (
+	defaultZeroAsEmpty bool = false
+	lookupTag               = "merger"
+)
+
+func mergeTag(a interface{}, b interface{}) {
 	mirrora := reflect.TypeOf(a)
 	mirrorb := reflect.TypeOf(b)
 	if mirrora != mirrorb {
@@ -34,14 +39,14 @@ func merge_tag(a interface{}, b interface{}) {
 // options:
 // * zero-as-empty - treat empty (default) values as unset, and keep previous.
 func Merge(a, b interface{}) (interface{}, error) {
-	v, err := merge(reflect.ValueOf(a), reflect.ValueOf(b))
+	v, err := merge(reflect.ValueOf(a), reflect.ValueOf(b), defaultZeroAsEmpty)
 	if err != nil {
 		return nil, err
 	}
 	return v.Interface(), nil
 }
 
-func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
+func merge(atype, btype reflect.Value, zeroAsEmpty bool) (out reflect.Value, err error) {
 	// NOTE: We are creating new object of given type each time and not
 	// using inplace replace. This is by design.
 
@@ -49,8 +54,6 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 	//	return reflect.Value{}, ErrUnmergable
 	//}
 
-	// Treat 0 as variable yet to be set
-	zeroAsEmpty := false
 	if atype.IsValid() && btype.IsValid() && atype.Type() != btype.Type() {
 		return reflect.Value{}, ErrUnmergable
 	}
@@ -59,7 +62,7 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 	//}
 	if atype.Kind() == reflect.Ptr {
 		// If we do unwrap then pack again
-		out, err = merge(atype.Elem(), btype.Elem())
+		out, err = merge(atype.Elem(), btype.Elem(), zeroAsEmpty)
 		if err == nil && out.IsValid() && out.Kind() != reflect.Map {
 			out = out.Addr()
 		}
@@ -71,12 +74,15 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 
 		for i := 0; i < atype.NumField(); i++ {
 			f := atype.Type().Field(i)
-			tag, ok := f.Tag.Lookup("merger")
+			tag, ok := f.Tag.Lookup(lookupTag)
 			if ok {
-				args := strings.Split(tag, ",")
-				switch args[0] {
-				case "zero-as-empty":
-					zeroAsEmpty = true
+				// reset zeroAsEmpty to default value
+				zeroAsEmpty = defaultZeroAsEmpty
+				for _, arg := range strings.Split(tag, ",") {
+					switch arg {
+					case "zero-as-empty":
+						zeroAsEmpty = true
+					}
 				}
 			}
 			// great!
@@ -87,7 +93,7 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 				cfield.Set(afield)
 			} else {
 				bfield := btype.Field(i)
-				merged, _ := merge(afield, bfield)
+				merged, _ := merge(afield, bfield, zeroAsEmpty)
 				if merged.IsValid() {
 					cfield.Set(merged)
 				}
@@ -112,7 +118,7 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 			i := atype.MapIndex(bkey)
 			has := i.IsValid()
 			if has {
-				ix, err := merge(i, bval)
+				ix, err := merge(i, bval, zeroAsEmpty)
 				if err != nil {
 					return reflect.Value{}, err
 				}
@@ -129,25 +135,21 @@ func merge(atype, btype reflect.Value) (out reflect.Value, err error) {
 			switch btype.Kind() {
 			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 				if btype.Int() == 0 {
-					log.Println("int 0, keep previous", atype.Int())
 					out = atype
 					return
 				}
 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 				if btype.Uint() == 0 {
-					log.Println("uint 0, keep previouse", atype.Uint())
 					out = atype
 					return
 				}
 			case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
 				if btype.IsNil() {
-					log.Println("ptr 0, keep previouse")
 					out = atype
 					return
 				}
 			case reflect.String:
 				if btype.Len() == 0 {
-					log.Println("str 0, keep previouse", atype.String())
 					out = atype
 					return
 				}
