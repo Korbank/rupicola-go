@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/merger"
+	"github.com/mkocot/weld"
 	"gopkg.in/yaml.v2"
 )
 
@@ -120,6 +120,12 @@ func mapFrom(this map[interface{}]interface{}) map[string]Value {
 	}
 	return mapa
 }
+
+// ValFrom wrapes provided value inside Value
+func ValFrom(this interface{}) Value {
+	return valFrom(this)
+}
+
 func valFrom(this interface{}) Value {
 	var val = new(value)
 	switch cast := this.(type) {
@@ -284,7 +290,7 @@ func (c *config) Load(paths ...string) error {
 			}
 		}
 
-		m, _ := merger.Merge(c.root.Mapa, val.Mapa)
+		m, _ := weld.Weld(c.root.Mapa, val.Mapa)
 		c.root.Mapa = m.(map[string]Value)
 	}
 	return nil
