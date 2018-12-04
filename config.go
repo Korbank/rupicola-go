@@ -1,4 +1,4 @@
-package main
+package rupicola
 
 import (
 	"bytes"
@@ -423,6 +423,7 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		if err = meth.Validate(); err != nil {
 			return nil, err
 		}
+		log.Info("add new method", "name", methodName, "details", meth)
 		c.Methods[methodName] = meth
 	}
 	logsSecrion := x.Get("log")

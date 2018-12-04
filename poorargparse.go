@@ -1,4 +1,4 @@
-package main
+package rupicola
 
 // The expected high quality Just-Work (tm)
 

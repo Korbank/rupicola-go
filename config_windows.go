@@ -1,4 +1,4 @@
-package main
+package rupicola
 
 import "errors"
 import log "github.com/inconshreveable/log15"

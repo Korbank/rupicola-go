@@ -1,6 +1,6 @@
 // +build !windows
 
-package main
+package rupicola
 
 import "log/syslog"
 import log "github.com/inconshreveable/log15"
