@@ -136,7 +136,7 @@ type rupicolaRPCContext struct {
 type rupicolaProcessor struct {
 	limits    Limits
 	processor rupicolarpc.JsonRpcProcessor
-	config    *RupicolaConfig
+	config    *Config
 }
 
 type rupicolaProcessorChild struct {
@@ -150,7 +150,7 @@ func (child *rupicolaProcessorChild) listen() error {
 	return child.bind.Bind(child.mux, child.parent.config.Limits)
 }
 
-func (child *rupicolaProcessorChild) config() *RupicolaConfig {
+func (child *rupicolaProcessorChild) config() *Config {
 	return child.parent.config
 }
 
@@ -162,7 +162,7 @@ func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
 	return child
 }
 
-func newRupicolaProcessorFromConfig(conf *RupicolaConfig) *rupicolaProcessor {
+func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
 	rupicolaProcessor := &rupicolaProcessor{
 		config:    conf,
 		limits:    conf.Limits,
@@ -274,7 +274,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	child.parent.processor.ProcessContext(r.Context(), request, w)
 }
 
-func ListenAndServe(configuration *RupicolaConfig) error {
+func ListenAndServe(configuration *Config) error {
 	rupicolaProcessor := newRupicolaProcessorFromConfig(configuration)
 
 	failureChannel := make(chan error)

@@ -7,9 +7,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/mkocot/weld"
 	"gopkg.in/yaml.v2"
 )
 
@@ -23,9 +23,9 @@ type Value interface {
 	Uint32(def uint32) uint32
 	Int64(def int64) int64
 	Duration(def time.Duration) time.Duration
-	Map(def map[interface{}]interface{}) map[string]Value
+	Map() map[string]Value
 	Array(def []interface{}) []Value
-	String(def string) string
+	AsString(def string) string
 	Bool(def bool) bool
 	Get(key ...string) Value
 	get(key string) Value
@@ -34,25 +34,59 @@ type Value interface {
 	IsMap() bool
 	Raw() interface{}
 }
+type mapValue struct {
+	Mapa map[string]Value
+}
+type listValue struct {
+	Lista []interface{}
+}
+type scalarValue struct {
+	Other interface{}
+}
 
 type value struct {
 	Mapa  map[string]Value
-	Lista []interface{}
+	Lista []Value
 	Other interface{}
+}
+
+func (v *value) String() string {
+	if !v.IsValid() {
+		return "invalid"
+	}
+	if v.IsArray() {
+		return "array"
+	}
+	if v.IsMap() {
+		b := &strings.Builder{}
+		b.WriteString("{")
+
+		for k, v := range v.Mapa {
+			b.WriteString(k + ":" + fmt.Sprintf("%v", v))
+		}
+
+		b.WriteString("}")
+		return b.String()
+	}
+	return fmt.Sprintf("%v", v.Other)
 }
 
 func (v *value) IsArray() bool {
 	return v.Lista != nil
 }
+
 func (v *value) IsMap() bool {
 	return v.Mapa != nil
 }
+
 func (v *value) Raw() interface{} {
 	return v.Other
 }
+
 func (v *value) Uint32(def uint32) uint32 {
 	return uint32(v.Int64(int64(def)))
 }
+
 func (v *value) IsValid() bool {
 	return v.Mapa != nil || v.Lista != nil || v.Other != nil
 }
@@ -60,7 +94,7 @@ func (v *value) IsValid() bool {
 func (v *value) Duration(def time.Duration) time.Duration {
 	return time.Duration(v.Int64(int64(def)))
 }
-func (v *value) String(def string) string {
+func (v *value) AsString(def string) string {
 	if v.Other == nil {
 		return def
 	}
@@ -82,28 +116,34 @@ func (v *value) Bool(def bool) bool {
 	return def
 }
 
-func (v *value) Map(def map[interface{}]interface{}) map[string]Value {
-	if v.Mapa == nil {
-		// saaad
-		return mapFrom(def)
-	}
+func (v *value) Map() map[string]Value {
 	return v.Mapa
 }
-func (v *value) Array(def []interface{}) []Value {
-	// Yeeees we cast, loop and do other bad things
-	// but who cares
-	var result []Value
-	convertFrom := v.Lista
-	if v.Lista == nil {
-		convertFrom = def
-	}
 
-	for _, x := range convertFrom {
+func arrayFrom(def []interface{}) []Value {
+	var result []Value
+	for _, x := range def {
 		val := valFrom(x)
 		result = append(result, val)
 	}
-
 	return result
+}
+
+func (v *value) Array(def []interface{}) []Value {
+	// Yeeees we cast, loop and do other bad things
+	// but who cares
+	if v.Lista != nil {
+		return v.Lista
+	}
+	return arrayFrom(def)
+}
+
+func mapFrom2(this map[string]interface{}) map[string]Value {
+	mapa := make(map[string]Value)
+	for k, v := range this {
+		mapa[k] = valFrom(v)
+	}
+	return mapa
 }
 func mapFrom(this map[interface{}]interface{}) map[string]Value {
 	mapa := make(map[string]Value)
@@ -129,15 +169,20 @@ func ValFrom(this interface{}) Value {
 func valFrom(this interface{}) Value {
 	var val = new(value)
 	switch cast := this.(type) {
+	case Value:
+		return cast
+	case []Value:
+		val.Lista = cast
+	case map[string]Value:
+		val.Mapa = cast
+	case map[string]interface{}:
+		val.Mapa = mapFrom2(cast)
 	case map[interface{}]interface{}:
 		val.Mapa = mapFrom(cast)
-		break
 	case []interface{}:
-		val.Lista = cast
-		break
+		val.Lista = arrayFrom(cast)
 	default:
 		val.Other = this
-		break
 	}
 	return val
 }
@@ -254,7 +299,7 @@ func (c *config) Load(paths ...string) error {
 			return e
 		}
 		val := new(value)
-		var specialOne map[interface{}]interface{}
+		var specialOne map[string]interface{}
 		if err := yaml.Unmarshal(bytes, &specialOne); err != nil {
 			if err := yaml.Unmarshal(bytes, &val.Lista); err != nil {
 				if err := yaml.Unmarshal(bytes, &val.Other); err != nil {
@@ -262,17 +307,17 @@ func (c *config) Load(paths ...string) error {
 				}
 			}
 		} else {
-			val.Mapa = mapFrom(specialOne)
+			val.Mapa = mapFrom2(specialOne)
 		}
 		// do we have any includes
 		includesr := val.Get("include")
 		includes := includesr.Array(nil)
 		if len(includes) != 0 {
 			for _, v := range includes {
-				path := v.String("")
+				path := v.AsString("")
 				req := false
 				if path == "" {
-					compound := v.Map(nil)
+					compound := v.Map()
 					for k, v := range compound {
 						path = k
 						req = v.Bool(false)
@@ -289,9 +334,48 @@ func (c *config) Load(paths ...string) error {
 				}
 			}
 		}
-
-		m, _ := weld.Weld(c.root.Mapa, val.Mapa)
-		c.root.Mapa = m.(map[string]Value)
+		c.root.Mapa = mergeMap(c.root.Mapa, val.Mapa)
 	}
 	return nil
+}
+
+func pp(a Value, lvl int) {
+	if a.IsMap() {
+		for k, v := range a.Map() {
+			fmt.Printf("%s%s:\n", strings.Repeat(" ", lvl), k)
+			pp(v, lvl+1)
+		}
+	} else if a.IsArray() {
+		for _, v := range a.Array(nil) {
+			pp(v, lvl+1)
+		}
+	} else {
+		fmt.Printf("%s%v\n", strings.Repeat(" ", lvl), a.Raw())
+	}
+}
+
+func mergeValue(a, b Value) Value {
+	if a.IsMap() && b.IsMap() {
+		return valFrom(mergeMap(a.Map(), b.Map()))
+	} else if a.IsArray() && b.IsArray() {
+		return valFrom(append(a.Array(nil), b.Array(nil)...))
+	}
+	return b
+}
+
+func mergeMap(a, b map[string]Value) map[string]Value {
+	c := make(map[string]Value)
+	for k, v := range a {
+		c[k] = v
+	}
+
+	for k, v := range b {
+		av, has := a[k]
+		if has {
+			c[k] = mergeValue(av, v)
+		} else {
+			c[k] = v
+		}
+	}
+	return c
 }

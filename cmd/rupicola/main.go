@@ -11,7 +11,7 @@ import (
 	log "github.com/inconshreveable/log15"
 )
 
-func registerCleanupAtExit(config *rupicola.RupicolaConfig) {
+func registerCleanupAtExit(config *rupicola.Config) {
 	sigc := make(chan os.Signal, 10)
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
 	go func(c chan os.Signal) {

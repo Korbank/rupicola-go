@@ -70,8 +70,8 @@ type LogDef struct {
 	Path string
 }
 
-// RupicolaConfig ...
-type RupicolaConfig struct {
+// Config ...
+type Config struct {
 	Protocol Protocol
 	Limits   Limits
 	Log      LogDef
@@ -257,7 +257,7 @@ func fromVal(value config.Value) (methodArgs, error) {
 
 	var err error
 	if value.IsMap() {
-		out.Param = value.Get("param").String("")
+		out.Param = value.Get("param").AsString("")
 		out.Skip = value.Get("skip").Bool(false)
 		out.Static = false
 	} else if value.IsArray() {
@@ -275,7 +275,7 @@ func fromVal(value config.Value) (methodArgs, error) {
 	return out, err
 }
 
-func (conf *RupicolaConfig) isValidAuth(login string, password string) bool {
+func (conf *Config) isValidAuth(login string, password string) bool {
 	if conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
 		passOk, _ := pwhash.Verify(password, conf.Protocol.AuthBasic.Password)
@@ -325,8 +325,8 @@ func (m *MethodDef) Validate() error {
 }
 
 // NewConfig - create configuration with default values
-func NewConfig() *RupicolaConfig {
-	var cfg RupicolaConfig
+func NewConfig() *Config {
+	var cfg Config
 	cfg.Protocol.URI.RPC = "/rpc"
 	cfg.Protocol.URI.Streamed = "/streaming"
 	cfg.Limits = Limits{10000, 0, 5242880, 5242880}
@@ -348,7 +348,7 @@ func shamefullFileModeFix(inout *os.FileMode) error {
 }
 
 // ReadConfig from file
-func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
+func ReadConfig(configFilePath string) (*Config, error) {
 	x := config.NewConfig()
 	if err := x.Load(configFilePath); err != nil {
 		return nil, err
@@ -364,36 +364,37 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 	}
 	var err error
 	protocolSection := x.Get("protocol")
-	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").String("")
-	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").String("")
-	c.Protocol.URI.RPC = protocolSection.Get("uri", "rpc").String("/jsonrpc")
-	c.Protocol.URI.Streamed = protocolSection.Get("uri", "streamed").String("/streaming")
+	c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").AsString("")
+	c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").AsString("")
+	c.Protocol.URI.RPC = protocolSection.Get("uri", "rpc").AsString("/jsonrpc")
+	c.Protocol.URI.Streamed = protocolSection.Get("uri", "streamed").AsString("/streaming")
 	for _, bind := range protocolSection.Get("bind").Array(nil) {
 		b := new(Bind)
-		b.Address = bind.Get("address").String("") // error on empty
+		b.Address = bind.Get("address").AsString("") // error on empty
 		b.AllowPrivate = bind.Get("allow-private").Bool(false)
-		b.Cert = bind.Get("cert").String("")
+		b.Cert = bind.Get("cert").AsString("")
 		b.GID = int(bind.Get("gid").Int32(int32(os.Getgid())))
-		b.Key = bind.Get("key").String("")
+		b.Key = bind.Get("key").AsString("")
 		b.Mode = os.FileMode(bind.Get("mode").Uint32(666)) // need love...
 		shamefullFileModeFix(&b.Mode)
 
 		b.Port = uint16(bind.Get("port").Int32(0))
-		b.Type, err = parseBindType(bind.Get("type").String(""))
+		b.Type, err = parseBindType(bind.Get("type").AsString(""))
 		b.UID = int(bind.Get("uid").Int32(int32(os.Getuid())))
 		c.Protocol.Bind = append(c.Protocol.Bind, b)
 	}
-	methodsSection := x.Get("methods")
+
 	c.Methods = make(map[string]*MethodDef)
-	for methodName, v := range methodsSection.Map(nil) {
+	methodsSection := x.Get("methods")
+	for methodName, v := range methodsSection.Map() {
 		meth := new(MethodDef)
 		meth.logger = log.New("method", methodName)
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
-		meth.Encoding, err = parseEncoding(v.Get("encoding").String("utf8"))
+		meth.Encoding, err = parseEncoding(v.Get("encoding").AsString("utf8"))
 		meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0) * time.Second
-		meth.InvokeInfo.Exec = v.Get("invoke", "exec").String("")
+		meth.InvokeInfo.Exec = v.Get("invoke", "exec").AsString("")
 		meth.InvokeInfo.RunAs.GID = v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
 		meth.InvokeInfo.RunAs.UID = v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
 		args := v.Get("invoke", "args").Array(nil)
@@ -407,11 +408,11 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		meth.Output = v.Get("output")
 		meth.Private = v.Get("private").Bool(false)
 		meth.Streamed = v.Get("streamed").Bool(false)
-		methParams := v.Get("params").Map(nil)
+		methParams := v.Get("params").Map()
 		if len(methParams) != 0 {
 			meth.Params = make(map[string]MethodParam)
 			for paramName, v := range methParams {
-				tyype, err := parseMethodParamType(v.Get("type").String("")) // required
+				tyype, err := parseMethodParamType(v.Get("type").AsString("")) // required
 				if err != nil {
 					meth.logger.Error("required field missing", "name", "type")
 				}
@@ -427,15 +428,15 @@ func ReadConfig(configFilePath string) (*RupicolaConfig, error) {
 		c.Methods[methodName] = meth
 	}
 	logsSecrion := x.Get("log")
-	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").String(""))
+	c.Log.Backend, err = parseBackend(logsSecrion.Get("backend").AsString(""))
 	if err != nil {
 		return nil, err
 	}
-	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").String("warn"))
+	c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").AsString("warn"))
 	if err != nil {
 		return nil, err
 	}
-	c.Log.Path = logsSecrion.Get("path").String("")
+	c.Log.Path = logsSecrion.Get("path").AsString("")
 	return c, err
 }
 
@@ -525,7 +526,7 @@ func (m *methodArgs) evalueateArgs(arguments map[string]interface{}, output *byt
 }
 
 // SetLogging to expected values
-func (conf *RupicolaConfig) SetLogging() {
+func (conf *Config) SetLogging() {
 	var logLevel log.Lvl
 	switch conf.Log.LogLevel {
 	case LLError:
