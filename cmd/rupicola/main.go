@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"bitbucket.org/kociolek/rupicola-ng"
+	"github.com/korbank/rupicola-go"
 
 	log "github.com/inconshreveable/log15"
 )

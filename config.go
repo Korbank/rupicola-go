@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"bitbucket.org/kociolek/rupicola-ng/internal/pkg/config"
+	"github.com/korbank/rupicola-go/config"
+
 	"github.com/mkocot/pwhash"
 
 	log "github.com/inconshreveable/log15"
