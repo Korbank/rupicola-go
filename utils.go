@@ -9,10 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	log "github.com/inconshreveable/log15"
-	"github.com/mkocot/rupicolarpc"
+	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
 const (
@@ -214,6 +215,29 @@ func (w *httpJSONRequest) Reader() io.ReadCloser {
 	return w.r.Body
 }
 
+type flusher interface {
+	io.Writer
+	http.Flusher
+}
+
+type flushWrapper struct {
+	flusher
+	flush sync.Once
+}
+
+func (f *flushWrapper) Write(p []byte) (n int, err error) {
+	n, err = f.flusher.Write(p)
+	f.flusher.Flush()
+	return
+}
+
+func wrapWithFlusher(out io.Writer) io.Writer {
+	if f, ok := out.(flusher); ok {
+		return &flushWrapper{flusher: f}
+	}
+	return out
+}
+
 // ServeHTTP is implementation of http interface
 func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Debug("processing request",
@@ -270,8 +294,16 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if !userData.isAuthorized && !userData.allowPrivate {
 		request.err = rpcUnauthorizedError
 	}
+	var writer io.Writer = w
+	if !userData.isRPC && request.err == nil {
+		// http output is picky as it tries to buffer some data to respond with nice
+		// Conent-Length header, but for our streaming method most of the time it's
+		// just hold output until procedure finished
+		log.Debug("wrap writer with flusher")
+		writer = wrapWithFlusher(writer)
+	}
 
-	child.parent.processor.ProcessContext(r.Context(), request, w)
+	child.parent.processor.ProcessContext(r.Context(), request, writer)
 }
 
 func ListenAndServe(configuration *Config) error {

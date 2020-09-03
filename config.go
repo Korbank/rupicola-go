@@ -19,7 +19,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 
-	"github.com/mkocot/rupicolarpc"
+	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
 // Limits ...
@@ -111,9 +111,6 @@ type MethodDef struct {
 	Output interface{}
 }
 
-// MethodParamType ...
-type MethodParamType int
-
 // MethodEncoding ...
 type MethodEncoding int
 
@@ -128,14 +125,33 @@ const (
 	// Base85 - Encode message as base85
 	Base85
 )
+
+// MethodParamType ...
+type MethodParamType int
+
 const (
 	// String - Method parameter should be string
 	String MethodParamType = iota
-	// Int - Method parameter should be int
+	// Int - Method parameter should be int (not float)
 	Int
 	// Bool - Method parameter should be bool
 	Bool
+	//Number - Any number (for now this is alias)
+	Number
 )
+
+func (mpt MethodParamType) String() string {
+	switch mpt {
+	case String:
+		return "string"
+	case Int:
+		return "int"
+	case Bool:
+		return "bool"
+	default:
+		return fmt.Sprintf("unknown(%d)", mpt)
+	}
+}
 
 type methodArgs struct {
 	Param    string
@@ -441,6 +457,21 @@ func ReadConfig(configFilePath string) (*Config, error) {
 	return c, err
 }
 
+func (t MethodParamType) defaultValue() interface{} {
+	switch t {
+	case String:
+		return ""
+	case Number:
+		fallthrough
+	case Int:
+		return 0
+	case Bool:
+		return false
+	default:
+		panic("Sloppy programmer")
+	}
+}
+
 // CheckParams ensures that all required paramters are present and have valid type
 func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 	for name, arg := range m.Params {
@@ -453,21 +484,55 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 		if arg.Optional && !ok {
 			// Initialize if required
 			val = arg.defaultVal.Raw()
+			if val == nil {
+				val = arg.Type.defaultValue()
+			}
 			params[name] = val
+			// don't check default values
+			return nil
 		}
-
+		providedKind := reflect.TypeOf(val).Kind()
+		m.logger.Debug("arg conversion", "from", providedKind, "to", arg.Type)
 		switch arg.Type {
 		case String:
 			_, ok = val.(string)
 		case Int:
-			_, ok = val.(int)
+			// any numerical is ok
+			switch providedKind {
+			case reflect.Float32:
+				fallthrough
+			case reflect.Float64:
+				fallthrough
+			case reflect.Int:
+				fallthrough
+			case reflect.Int8:
+				fallthrough
+			case reflect.Int16:
+				fallthrough
+			case reflect.Int32:
+				fallthrough
+			case reflect.Int64:
+				fallthrough
+			case reflect.Uint:
+				fallthrough
+			case reflect.Uint8:
+				fallthrough
+			case reflect.Uint16:
+				fallthrough
+			case reflect.Uint32:
+				fallthrough
+			case reflect.Uint64:
+				ok = true
+			default:
+				ok = false
+			}
 		case Bool:
 			_, ok = val.(bool)
 		default:
 			ok = false
 		}
 		if !ok {
-			m.logger.Error("invalid param", "requested", arg.Type, "received", reflect.TypeOf(val))
+			m.logger.Error("invalid param", "requested", arg.Type, "received", providedKind)
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 	}

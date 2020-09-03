@@ -478,7 +478,7 @@ func (f *jsonRPCrequestPriv) UserData() UserData {
 func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
 	_, f.err = f.requestData.ReadFrom(r)
-	f.log = log.New("method", f.Method)
+	f.log = log.New("method", f.Method())
 	r.Close()
 	return f.err
 }
@@ -553,7 +553,7 @@ func (f *jsonRPCrequestPriv) process() error {
 	select {
 	case <-f.ctx.Done():
 		// oooor transport error?
-		f.log.Info("method timed out", "method", f.Method)
+		f.log.Info("timed out")
 		f.log.Info("context error", "error", f.ctx.Err())
 		// this could be canceled too... but
 		// why it should be like that? if we get
@@ -600,7 +600,7 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	case io.Reader:
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
-			f.log.Error("stream copy failed", "method", f.Method, "err", f.err)
+			f.log.Error("stream copy failed", "err", f.err)
 		}
 	default:
 		f.err = f.rpcResponserPriv.SetResponseResult(result)

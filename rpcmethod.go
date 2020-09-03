@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/mkocot/rupicolarpc"
+	"github.com/korbank/rupicola-go/rupicolarpc"
 
 	log "github.com/inconshreveable/log15"
 )
@@ -20,15 +20,14 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	if uncastedContext != nil {
 		castedContext, ok = uncastedContext.(*rupicolaRPCContext)
 	}
-	if ok {
-		if !castedContext.isAuthorized && (!castedContext.allowPrivate || !m.Private) {
-			castedContext.shouldRequestAuth = true
-			log.Warn("Unauthorized")
-			return nil, nil, rpcUnauthorizedError
-		}
-	} else {
+	if !ok {
 		log.Crit("Provided context is not pointer")
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
+	}
+	if !castedContext.isAuthorized && (!castedContext.allowPrivate || !m.Private) {
+		castedContext.shouldRequestAuth = true
+		log.Warn("Unauthorized")
+		return nil, nil, rpcUnauthorizedError
 	}
 	// We will create this when needed
 	//var additionalParams map[string]interface{}
@@ -129,6 +128,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		m.logger.Debug("Waiting for clean exit")
 		if err := process.Wait(); err != nil {
 			m.logger.Error("Waiting for close process failed", "err", err)
+			pw.CloseWithError(err)
 		} else {
 			m.logger.Debug("Done")
 		}
