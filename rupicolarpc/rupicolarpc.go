@@ -134,9 +134,8 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 			// Count arguments from 1 to N
 			unified[strconv.Itoa(i+1)] = v //fmt.Sprint(v)
 		}
-
 	default:
-		//log.Printf("Invalid case %v\n", converted)
+		log.Warn("invalid 'param' type only map or struct", "received", converted)
 		return NewStandardError(InvalidRequest)
 	}
 	*w = unified
