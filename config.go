@@ -372,7 +372,7 @@ func ReadConfig(configFilePath string) (*Config, error) {
 	for _, bind := range protocolSection.Get("bind").Array(nil) {
 		b := new(Bind)
 		b.Address = bind.Get("address").AsString("") // error on empty
-		b.AllowPrivate = bind.Get("allow-private").Bool(false)
+		b.AllowPrivate = bind.Get("allow_private").Bool(false)
 		b.Cert = bind.Get("cert").AsString("")
 		b.GID = int(bind.Get("gid").Int32(int32(os.Getgid())))
 		b.Key = bind.Get("key").AsString("")
