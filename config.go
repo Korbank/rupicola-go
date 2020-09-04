@@ -53,6 +53,8 @@ const (
 	BackendSyslog Backend = 1 << iota
 	// BackendStderr write to stderr (default)
 	BackendStderr Backend = 1 << iota
+	// BackendKeep keep current output
+	BackendKeep Backend = 1 << iota
 )
 
 const (
@@ -618,6 +620,9 @@ func (conf *Config) SetLogging() {
 	newLogger := Logger.Level(logLevel)
 
 	switch conf.Log.Backend {
+	case BackendKeep:
+		// NoOp
+		break
 	case BackendStderr:
 		newLogger = newLogger.Output(os.Stderr)
 	case BackendStdout:

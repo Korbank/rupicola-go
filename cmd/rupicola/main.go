@@ -47,10 +47,17 @@ func registerCleanupAtExit(config *rupicola.Config) {
 
 func main() {
 	configPath := flag.String("config", "", "Specify directory or config file")
+	pretty := flag.Bool("pretty", false, "pretty console print (this forces console output)")
 	flag.Parse()
 	if *configPath == "" {
 		flag.Usage()
 		os.Exit(1)
+	}
+	log.TimeFieldFormat = log.TimeFormatUnix
+	if *pretty {
+		logger = logger.Output(log.NewConsoleWriter(func(w *log.ConsoleWriter) {
+			w.Out = os.Stdout
+		}))
 	}
 	rupicola.Logger = logger
 	configuration, err := rupicola.ReadConfig(*configPath)
@@ -69,7 +76,9 @@ func main() {
 		logger.Error().Msg("No valid bind points")
 		os.Exit(1)
 	}
-
+	if *pretty {
+		configuration.Log.Backend = rupicola.BackendKeep
+	}
 	configuration.SetLogging()
 
 	registerCleanupAtExit(configuration)
