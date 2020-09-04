@@ -3,8 +3,6 @@ package rupicolarpc
 import (
 	"fmt"
 	"io"
-
-	log "github.com/inconshreveable/log15"
 )
 
 type legacyStreamingResponse struct {
@@ -16,7 +14,7 @@ func newLegacyStreamingResponse(out io.Writer) rpcResponserPriv {
 }
 
 func (b *legacyStreamingResponse) SetResponseError(e error) error {
-	log.Debug("SetResponseError unused for Legacy streaming", "error", e)
+	Logger.Debug().Err(e).Msg("SetResponseError unused for Legacy streaming")
 	return nil
 }
 
@@ -26,7 +24,7 @@ func (b *legacyStreamingResponse) SetResponseResult(result interface{}) (err err
 	case string, int, int16, int32, int64, int8:
 		_, err = io.WriteString(b, fmt.Sprintf("%v", converted))
 	default:
-		log.Crit("Unknown input result", "result", result)
+		Logger.Error().Str("result", fmt.Sprintf("%v", result)).Msg("Unknown input result")
 	}
 	if err != nil {
 		b.SetResponseError(err)

@@ -3,13 +3,16 @@ package rupicolarpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
 	"time"
 
-	log "github.com/inconshreveable/log15"
+	log "github.com/rs/zerolog"
 )
+
+var Logger = log.Nop()
 
 // ContextKey : Supported keys in context
 type ContextKey int
@@ -38,6 +41,19 @@ const (
 	StreamingMethod MethodType = 4
 	unknownMethod   MethodType = 0
 )
+
+func (me MethodType) String() string {
+	switch me {
+	case RPCMethod:
+		return "RPC"
+	case StreamingMethod:
+		return "Streaming"
+	case StreamingMethodLegacy:
+		return "Streaming (legacy)"
+	default:
+		return fmt.Sprintf("unknown(%d)", me)
+	}
+}
 
 // Invoker is interface for method invoked by rpc server
 type Invoker interface {
@@ -135,7 +151,7 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 			unified[strconv.Itoa(i+1)] = v //fmt.Sprint(v)
 		}
 	default:
-		log.Warn("invalid 'param' type only map or struct", "received", converted)
+		Logger.Warn().Str("received", fmt.Sprintf("%+v", converted)).Msg("invalid 'param' type only map or struct")
 		return NewStandardError(InvalidRequest)
 	}
 	*w = unified
@@ -170,7 +186,7 @@ func NewErrorEx(a error, id interface{}, vers JsonRPCversion) *JsonRpcResponse {
 	case *_Error:
 		b = err
 	default:
-		log.Debug("Should not happen - wrapping unknown error:", "err", a)
+		Logger.Debug().Err(a).Msg("Should not happen - wrapping unknown error")
 		b, _ = NewStandardErrorData(InternalError, err.Error()).(*_Error)
 	}
 	return &JsonRpcResponse{vers, b, nil, id}
@@ -232,7 +248,7 @@ var (
 // NewServerError from code and message
 func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
-		log.Crit("Invalid code", "code", code)
+		Logger.Panic().Int("code", code).Msg("Invalid code")
 		panic("invlid code")
 	}
 	var theError _Error
@@ -258,7 +274,7 @@ func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	case InternalError:
 		theError.Message = "Internal error"
 	default:
-		log.Crit("WTF")
+		Logger.Panic().Msg("WTF")
 		panic("WTF")
 	}
 	return &theError
@@ -411,7 +427,7 @@ func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
 	case StreamingMethod:
 		responser = newStreamingResponse(out, 0)
 	default:
-		log.Crit("Unknown method type", "type", metype)
+		Logger.Panic().Str("type", metype.String()).Msg("Unknown method type")
 		panic("Unexpected method type")
 	}
 	return responser
@@ -421,7 +437,7 @@ func changeProtocolIfRequired(responser rpcResponserPriv, request *requestData) 
 	if request.Jsonrpc == JsonRPCversion20s {
 		switch responser.(type) {
 		case *legacyStreamingResponse:
-			log.Info("Upgrading streaming protocol")
+			Logger.Info().Msg("Upgrading streaming protocol")
 			return newResponser(responser.Writer(), StreamingMethod)
 		}
 	}
@@ -441,7 +457,7 @@ func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 			err = ErrParseError
 		}
 	} else if decoder.More() {
-		log.Warn("Request contains more data. This is currently disallowed")
+		Logger.Warn().Msg("Request contains more data. This is currently disallowed")
 		err = ErrBatchUnsupported
 	}
 	n = 0
@@ -478,7 +494,7 @@ func (f *jsonRPCrequestPriv) UserData() UserData {
 func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
 	_, f.err = f.requestData.ReadFrom(r)
-	f.log = log.New("method", f.Method())
+	f.log = Logger.With().Str("method", f.Method()).Logger()
 	r.Close()
 	return f.err
 }
@@ -539,7 +555,7 @@ func (f *jsonRPCrequestPriv) process() error {
 		timeout = m.ExecTimeout
 	}
 	if timeout > 0 {
-		f.log.Debug("Seting time limit for method", "timeout", timeout)
+		f.log.Debug().Dur("timeout", timeout).Msg("Seting time limit for method")
 		kontext, cancel := context.WithTimeout(f.ctx, timeout)
 		defer cancel()
 		f.ctx = kontext
@@ -553,8 +569,8 @@ func (f *jsonRPCrequestPriv) process() error {
 	select {
 	case <-f.ctx.Done():
 		// oooor transport error?
-		f.log.Info("timed out")
-		f.log.Info("context error", "error", f.ctx.Err())
+		f.log.Info().Msg("timed out")
+		f.log.Info().Err(f.ctx.Err()).Msg("context error")
 		// this could be canceled too... but
 		// why it should be like that? if we get
 		// cancel from transport then whatever no one is
@@ -568,7 +584,7 @@ func (f *jsonRPCrequestPriv) process() error {
 		// This is just to ensure we won't hang forever if procedure
 		// is misbehaving
 		case <-time.NewTimer(time.Millisecond * 500).C:
-			f.log.Warn("procedure didn't exit gracefuly, forcing exit")
+			f.log.Warn().Msg("procedure didn't exit gracefuly, forcing exit")
 		case <-f.done:
 		}
 	}
@@ -578,12 +594,12 @@ func (f *jsonRPCrequestPriv) process() error {
 // SetResponseError saves passed error
 func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 	if f.ctx.Err() != nil {
-		f.log.Warn("trying to set error after deadline", "error", errs)
+		f.log.Warn().Err(errs).Msg("trying to set error after deadline")
 	} else {
 		// should we keep original error or overwrite it with response?
 		f.err = errs
 		if err := f.rpcResponserPriv.SetResponseError(errs); err != nil {
-			f.log.Warn("error while setting error response", "error", err)
+			f.log.Warn().Err(err).Msg("error while setting error response")
 		}
 	}
 	return f.err
@@ -592,7 +608,7 @@ func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 // SetResponseResult handle Reader case
 func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	if f.ctx.Err() != nil {
-		f.log.Warn("trying to set result after deadline")
+		f.log.Warn().Msg("trying to set result after deadline")
 		return f.err
 	}
 
@@ -600,7 +616,7 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	case io.Reader:
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
-			f.log.Error("stream copy failed", "err", f.err)
+			f.log.Error().Err(f.err).Msg("stream copy failed")
 		}
 	default:
 		f.err = f.rpcResponserPriv.SetResponseResult(result)
@@ -630,7 +646,7 @@ func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 	// check if method with given name exists
 	ms, okm := p.methods[name]
 	if !okm {
-		log.Error("not found", "method", name)
+		Logger.Error().Str("method", name).Msg("not found")
 		return nil, ErrMethodNotFound
 	}
 
@@ -644,7 +660,7 @@ func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 		}
 	}
 	if !okm {
-		log.Error("required type for method not found", "type", metype, "method", name)
+		Logger.Error().Str("type", metype.String()).Str("method", name).Msg("required type for method not found")
 		return nil, ErrMethodNotFound
 	}
 	return m, nil

@@ -2,9 +2,12 @@
 
 package rupicola
 
-import "log/syslog"
-import log "github.com/inconshreveable/log15"
+import (
+	"log/syslog"
 
-func configureSyslog(path string) (log.Handler, error) {
-	return log.SyslogNetHandler("", path, syslog.LOG_DAEMON, "rupicola", log.JsonFormat())
+	log "github.com/rs/zerolog"
+)
+
+func configureSyslog(path string) (log.SyslogWriter, error) {
+	return syslog.Dial("", path, syslog.LOG_DAEMON, "rupicola")
 }

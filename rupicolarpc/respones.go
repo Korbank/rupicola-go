@@ -3,9 +3,8 @@ package rupicolarpc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-
-	log "github.com/inconshreveable/log15"
 )
 
 var (
@@ -52,7 +51,7 @@ func (b *baseResponse) Writer() io.Writer {
 }
 
 func (b *baseResponse) Close() error {
-	log.Debug("using default empty Close method for response")
+	Logger.Debug().Msg("using default empty Close method for response")
 	return nil
 }
 
@@ -61,12 +60,12 @@ func (b *baseResponse) Write(p []byte) (int, error) {
 }
 
 func (b *baseResponse) SetResponseError(e error) error {
-	log.Debug("SetResponseError unused for Legacy streaming", "error", e)
+	Logger.Debug().Err(e).Msg("SetResponseError unused for Legacy streaming")
 	return nil
 }
 
 func (b *baseResponse) SetResponseResult(result interface{}) (err error) {
-	log.Crit("Unknown input result", "result", result)
+	Logger.Error().Str("result", fmt.Sprintf("%v", result)).Msg("Unknown input result")
 	return
 }
 
@@ -79,7 +78,7 @@ func (b *baseResponse) MaxResponse(max int64) {
 
 func (b *baseResponse) SetID(id *interface{}) {
 	if b.id != &nilInterface {
-		log.Warn("SetID invoked twice")
+		Logger.Warn().Msg("SetID invoked twice")
 	}
 	b.id = id
 }

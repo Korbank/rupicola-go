@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
-
-	log "github.com/inconshreveable/log15"
 )
 
 func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
@@ -21,12 +19,12 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		castedContext, ok = uncastedContext.(*rupicolaRPCContext)
 	}
 	if !ok {
-		log.Crit("Provided context is not pointer")
+		m.logger.Error().Msg("Provided context is not pointer")
 		return nil, nil, rupicolarpc.NewStandardError(rupicolarpc.InternalError)
 	}
 	if !castedContext.isAuthorized && (!castedContext.allowPrivate || !m.Private) {
 		castedContext.shouldRequestAuth = true
-		log.Warn("Unauthorized")
+		m.logger.Warn().Msg("Unauthorized")
 		return nil, nil, rpcUnauthorizedError
 	}
 	// We will create this when needed
@@ -45,7 +43,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	for _, arg := range m.InvokeInfo.Args {
 		skip, err := arg.evalueateArgs(params, buffer)
 		if err != nil {
-			log.Error("error", "err", err)
+			m.logger.Error().Err(err).Msg("error")
 			return nil, nil, err
 		}
 		if !skip {
@@ -54,7 +52,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		buffer.Reset()
 	}
 
-	m.logger.Debug("prepared method invocation", "exec", m.InvokeInfo.Exec, "args", appArguments)
+	m.logger.Debug().Str("exec", m.InvokeInfo.Exec).Strs("args", appArguments).Msg("prepared method invocation")
 	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
 
 	// Make it "better"
@@ -64,7 +62,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	if err == nil {
 		stdin.Close()
 	} else {
-		m.logger.Error("stdin", "error", err)
+		m.logger.Error().Err(err).Msg("stdin")
 		return nil, nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdin")
 	}
 
@@ -77,7 +75,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		// We don't want close app when we reach panic inside this goroutine
 		if r := recover(); r != nil {
 			if err, ok := r.(error); ok {
-				m.logger.Warn("error from recovery", "error", err)
+				m.logger.Warn().Err(err).Msg("error from recovery")
 			}
 		}
 	}()
@@ -94,7 +92,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	}
 	err = process.Start()
 	if err != nil {
-		m.logger.Error("unable to start process", "err", err)
+		m.logger.Error().Err(err).Msg("unable to start process")
 		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, err)
 	}
 	// We also have net.Pipe
@@ -110,27 +108,27 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	}
 	go func() {
 		time.Sleep(m.InvokeInfo.Delay)
-		m.logger.Debug("read loop started")
+		m.logger.Debug().Msg("read loop started")
 
 		_, err := io.Copy(writer, stdout)
 		if err != nil {
 			if err != io.EOF {
-				m.logger.Error("error reading from pipe", "err", err)
+				m.logger.Error().Err(err).Msg("error reading from pipe")
 				if err := process.Process.Kill(); err != nil {
-					m.logger.Error("sending kill failed", "err", err)
+					m.logger.Error().Err(err).Msg("sending kill failed")
 				}
 			} else {
-				m.logger.Debug("reading from pipe finished")
+				m.logger.Debug().Msg("reading from pipe finished")
 			}
 			pw.CloseWithError(err)
 		}
 
-		m.logger.Debug("Waiting for clean exit")
+		m.logger.Debug().Msg("Waiting for clean exit")
 		if err := process.Wait(); err != nil {
-			m.logger.Error("Waiting for close process failed", "err", err)
+			m.logger.Error().Err(err).Msg("Waiting for close process failed")
 			pw.CloseWithError(err)
 		} else {
-			m.logger.Debug("Done")
+			m.logger.Debug().Msg("Done")
 		}
 		pw.Close()
 	}()

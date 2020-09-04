@@ -1,8 +1,11 @@
 package rupicola
 
-import "errors"
-import log "github.com/inconshreveable/log15"
+import (
+	"errors"
 
-func configureSyslog(path string) (log.Handler, error) {
+	log "github.com/rs/zerolog"
+)
+
+func configureSyslog(path string) (log.SyslogWriter, error) {
 	return nil, errors.New("Syslog unsupported on Windows")
 }

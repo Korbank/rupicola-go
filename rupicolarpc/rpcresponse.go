@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-
-	log "github.com/inconshreveable/log15"
 )
 
 type rpcResponse struct {
@@ -49,7 +47,7 @@ func (b *rpcResponse) Close() error {
 	// so at this point we are under limit
 	n, err := io.Copy(b.raw, b.buffer)
 	if err != nil {
-		log.Debug("close RpcResponse", "n", n, "err", err)
+		Logger.Debug().Int64("n", n).Err(err).Msg("close RpcResponse")
 	}
 	return err
 }
@@ -70,7 +68,7 @@ func (b *rpcResponse) SetResponseError(e error) error {
 		return nil
 	}
 	if b.resultSet {
-		log.Debug("change error", "previous", b.prevErr, "now", e)
+		Logger.Debug().AnErr("previous", b.prevErr).AnErr("now", e).Msg("change error")
 	}
 	b.prevErr = e
 	b.resultSet = true
@@ -86,7 +84,7 @@ func (b *rpcResponse) SetResponseResult(result interface{}) error {
 		return nil
 	}
 	if b.resultSet {
-		log.Debug("result already set (result)")
+		Logger.Debug().Msg("result already set (result)")
 	}
 	b.resultSet = true
 	// pass through limiter

@@ -3,6 +3,7 @@ package rupicola
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/inconshreveable/log15"
 	"github.com/korbank/rupicola-go/rupicolarpc"
+	log "github.com/rs/zerolog"
 )
 
 const (
@@ -63,7 +64,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 
 	switch bind.Type {
 	case HTTP:
-		log.Info("starting listener", "type", "http", "address", bind.Address, "port", bind.Port)
+		Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
 		ln, err := ListenKeepAlive("tcp", srv.Addr)
 		if err != nil {
 			return err
@@ -75,7 +76,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 			MinVersion:               tls.VersionTLS12,
 			PreferServerCipherSuites: true,
 		}
-		log.Info("starting listener", "type", "https", "address", bind.Address, "port", bind.Port)
+		Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
 		ln, err := ListenKeepAlive("tcp", srv.Addr)
 		if err != nil {
 			return err
@@ -84,7 +85,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 
 	case Unix:
 		//todo: check
-		log.Info("starting listener", "type", "unix", "address", bind.Address)
+		Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
 		srv.Addr = bind.Address
 		// Change umask to ensure socker is created with right
 		// permissions (at this point no other IO opeations are running)
@@ -99,7 +100,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 
 		defer ln.Close()
 		if err := os.Chown(bind.Address, bind.UID, bind.GID); err != nil {
-			log.Crit("Setting permission failed", "address", bind.Address, "uid", bind.UID, "gid", bind.GID)
+			Logger.Error().Str("address", bind.Address).Int("uid", bind.UID).Int("gid", bind.GID).Msg("Setting permission failed")
 			return err
 		}
 		return srv.Serve(ln)
@@ -144,6 +145,7 @@ type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
 	bind   *Bind
 	mux    *http.ServeMux
+	log    log.Logger
 }
 
 // Start listening (this exits only on failure)
@@ -157,7 +159,7 @@ func (child *rupicolaProcessorChild) config() *Config {
 
 // Create separate context for given bind point (required for concurrent listening)
 func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux()}
+	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
 	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
 	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
 	return child
@@ -240,17 +242,13 @@ func wrapWithFlusher(out io.Writer) io.Writer {
 
 // ServeHTTP is implementation of http interface
 func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Debug("processing request",
-		"address", r.RemoteAddr,
-		"method", r.Method,
-		"size", r.ContentLength,
-		"path", r.URL)
+	child.log.Debug().Str("address", r.RemoteAddr).Str("method", r.Method).Int64("size", r.ContentLength).Str("path", r.URL.String()).Msg("processing request")
 
 	defer r.Body.Close()
 
 	// Accept only POST [this is corrent transport level error]
 	if r.Method != "POST" {
-		log.Warn("not allowed", "method", r.Method)
+		child.log.Warn().Str("method", r.Method).Msg("not allowed")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -259,7 +257,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	// Payload = 0 mean ignore
 	if child.parent.limits.PayloadSize > 0 && r.ContentLength > int64(child.parent.limits.PayloadSize) {
 		w.WriteHeader(http.StatusBadRequest)
-		log.Warn("request too big")
+		child.log.Warn().Msg("request too big")
 		return
 	}
 	request := &httpJSONRequest{r: r}
@@ -275,7 +273,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 		userData.isRPC = false
 		request.m = rupicolarpc.StreamingMethodLegacy
 	} else {
-		log.Warn("Unrecognized URI", "uri", r.RequestURI)
+		child.log.Warn().Str("uri", r.RequestURI).Msg("Unrecognized URI")
 		return
 	}
 
@@ -287,7 +285,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	if ip.IsLoopback() {
 		userData.allowPrivate = child.bind.AllowPrivate
 		if !userData.allowPrivate {
-			log.Debug("Request from loopback, but bindpoint will require authentification data", "bindpoint", child.bind.Address)
+			child.log.Debug().Msg("Request from loopback, but bindpoint will require authentification data")
 		}
 	}
 
@@ -299,7 +297,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 		// http output is picky as it tries to buffer some data to respond with nice
 		// Conent-Length header, but for our streaming method most of the time it's
 		// just hold output until procedure finished
-		log.Debug("wrap writer with flusher")
+		child.log.Debug().Msg("wrap writer with flusher")
 		writer = wrapWithFlusher(writer)
 	}
 
@@ -312,11 +310,11 @@ func ListenAndServe(configuration *Config) error {
 	failureChannel := make(chan error)
 	for _, bind := range configuration.Protocol.Bind {
 		child := rupicolaProcessor.spawnChild(bind)
-		log.Info("Spawning worker", "bind", bind)
+		Logger.Info().Str("bind", fmt.Sprintf("%+v", bind)).Msg("Spawning worker")
 		go func() {
 			failureChannel <- child.listen()
 		}()
 	}
-	log.Info("Listening for requests...")
+	Logger.Info().Msg("Listening for requests...")
 	return <-failureChannel
 }

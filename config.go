@@ -14,13 +14,15 @@ import (
 
 	"github.com/mkocot/pwhash"
 
-	log "github.com/inconshreveable/log15"
+	log "github.com/rs/zerolog"
 
 	"crypto/subtle"
 	"encoding/json"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
 )
+
+var Logger = log.Nop()
 
 // Limits ...
 type Limits struct {
@@ -49,6 +51,8 @@ const (
 	BackendStdout Backend = 1 << iota
 	// BackendSyslog write to syslog
 	BackendSyslog Backend = 1 << iota
+	// BackendStderr write to stderr (default)
+	BackendStderr Backend = 1 << iota
 )
 
 const (
@@ -206,9 +210,11 @@ func parseBackend(backend string) (Backend, error) {
 	case "syslog":
 		return BackendSyslog, nil
 	case "stdout":
+		return BackendStdout, nil
+	case "stderr":
 		fallthrough
 	case "":
-		return BackendStdout, nil
+		return BackendStderr, nil
 	default:
 		return BackendStdout, fmt.Errorf("Unknown backend %s", backend)
 	}
@@ -328,14 +334,14 @@ func (m *MethodDef) Validate() error {
 			definedParams[k] = false
 		} else {
 			// Fatal, or just return error?
-			m.logger.Error("undeclared param", "name", k)
+			m.logger.Error().Str("name", k).Msg("undeclared param")
 			return fmt.Errorf("Undeclared param '%v' in arguments", k)
 		}
 	}
 
 	for k, v := range definedParams {
 		if v {
-			m.logger.Warn("unused parameter defined", "name", k)
+			m.logger.Warn().Str("name", k).Msg("unused parameter defined")
 		}
 	}
 	return nil
@@ -405,7 +411,7 @@ func ReadConfig(configFilePath string) (*Config, error) {
 	methodsSection := x.Get("methods")
 	for methodName, v := range methodsSection.Map() {
 		meth := new(MethodDef)
-		meth.logger = log.New("method", methodName)
+		meth.logger = Logger.With().Str("method", methodName).Logger()
 		meth.Limits = new(MethodLimits)
 		meth.Limits.ExecTimeout = v.Get("limits", "exec-timeout").Duration(-1) * time.Millisecond
 		meth.Limits.MaxResponse = v.Get("limits", "max-response").Int64(-1)
@@ -431,7 +437,7 @@ func ReadConfig(configFilePath string) (*Config, error) {
 			for paramName, v := range methParams {
 				tyype, err := parseMethodParamType(v.Get("type").AsString("")) // required
 				if err != nil {
-					meth.logger.Error("required field missing", "name", "type")
+					meth.logger.Error().Str("name", "type").Msg("required field missing")
 				}
 				optional := v.Get("optional").Bool(false)
 				defaultVal := v.Get("default")
@@ -441,7 +447,7 @@ func ReadConfig(configFilePath string) (*Config, error) {
 		if err = meth.Validate(); err != nil {
 			return nil, err
 		}
-		log.Info("add new method", "name", methodName, "details", meth)
+		meth.logger.Info().Str("details", fmt.Sprintf("%+v", meth)).Msg("add new method")
 		c.Methods[methodName] = meth
 	}
 	logsSecrion := x.Get("log")
@@ -477,7 +483,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 	for name, arg := range m.Params {
 		val, ok := params[name]
 		if !ok && !arg.Optional {
-			m.logger.Error("invalid param")
+			m.logger.Error().Msg("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 		// add missing optional arguments with defined default value
@@ -492,7 +498,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 			return nil
 		}
 		providedKind := reflect.TypeOf(val).Kind()
-		m.logger.Debug("arg conversion", "from", providedKind, "to", arg.Type)
+		m.logger.Debug().Str("from", providedKind.String()).Str("to", arg.Type.String()).Msg("arg conversion")
 		switch arg.Type {
 		case String:
 			_, ok = val.(string)
@@ -532,7 +538,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 			ok = false
 		}
 		if !ok {
-			m.logger.Error("invalid param", "requested", arg.Type, "received", providedKind)
+			m.logger.Error().Str("requested", arg.Type.String()).Str("received", providedKind.String()).Msg("invalid param")
 			return rupicolarpc.NewStandardError(rupicolarpc.InvalidParams)
 		}
 	}
@@ -592,31 +598,39 @@ func (m *methodArgs) evalueateArgs(arguments map[string]interface{}, output *byt
 }
 
 // SetLogging to expected values
+// THIS IS NOT THREAD SAFE
 func (conf *Config) SetLogging() {
-	var logLevel log.Lvl
+	var logLevel log.Level
 	switch conf.Log.LogLevel {
 	case LLError:
-		logLevel = log.LvlError
+		logLevel = log.ErrorLevel
 	case LLWarn:
-		logLevel = log.LvlWarn
+		logLevel = log.WarnLevel
 	case LLInfo:
-		logLevel = log.LvlInfo
+		logLevel = log.InfoLevel
 	case LLDebug:
-		logLevel = log.LvlDebug
+		logLevel = log.DebugLevel
 	case LLOff:
-		logLevel = -1
+		logLevel = log.Disabled
 	}
-	var handler log.Handler
+
+	log.SetGlobalLevel(logLevel)
+	newLogger := Logger.Level(logLevel)
+
 	switch conf.Log.Backend {
+	case BackendStderr:
+		newLogger = newLogger.Output(os.Stderr)
 	case BackendStdout:
-		handler = log.StdoutHandler
+		newLogger = newLogger.Output(os.Stdout)
 	case BackendSyslog:
-		h, err := configureSyslog(conf.Log.Path)
+		// newLogger = newLogger.Output(log.SyslogLevelWriter(w log.SyslogWriter))
+		w, err := configureSyslog(conf.Log.Path)
 		if err != nil {
-			log.Error("Syslog connection failed", "err", err)
+			Logger.Error().Err(err).Msg("Syslog connection failed")
 			os.Exit(1)
 		}
-		handler = h
+		newLogger = newLogger.Output(log.SyslogLevelWriter(w))
 	}
-	log.Root().SetHandler(log.LvlFilterHandler(logLevel, handler))
+	Logger = newLogger
+	rupicolarpc.Logger = Logger
 }

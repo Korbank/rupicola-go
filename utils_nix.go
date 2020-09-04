@@ -9,15 +9,24 @@ import (
 	"time"
 
 	"github.com/felixge/tcpkeepalive"
-	log "github.com/inconshreveable/log15"
 )
+
+// func setKeepAlive(c *net.TCPConn, idle time.Duration, count int, interval time.Duration) error {
+// 	if err := c.SetKeepAlive(true); err != nil {
+// 		return err
+// 	}
+// 	file, err := c.File()
+// 	if err != nil {
+// 		return err
+// 	}
+
+// }
 
 func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 	c, err := ln.AcceptTCP()
 	if err != nil {
 		return nil, err
 	}
-
 	// Wait 30s before sending probes
 	// Use 4 probes
 	// And wait for each 5s
@@ -30,7 +39,7 @@ func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 // SetUserGroup assign UID and GID to process
 func SetUserGroup(process *exec.Cmd, m *MethodDef) {
 	// Requires root to work?
-	log.Debug("Nix code", "uid", m.InvokeInfo.RunAs.UID, "gid", m.InvokeInfo.RunAs.GID)
+	m.logger.Debug().Uint32("uid", m.InvokeInfo.RunAs.UID).Uint32("gid", m.InvokeInfo.RunAs.GID).Msg("Nix code")
 	process.SysProcAttr = &syscall.SysProcAttr{}
 	process.SysProcAttr.Credential = &syscall.Credential{
 		Uid:         m.InvokeInfo.RunAs.UID,

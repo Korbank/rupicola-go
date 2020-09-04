@@ -3,8 +3,6 @@ package rupicolarpc
 import (
 	"bytes"
 	"io"
-
-	log "github.com/inconshreveable/log15"
 )
 
 //TODO: How do we handle empty id?
@@ -70,7 +68,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 	}
 	n = 0
 	if b.isClosed {
-		log.Warn("Write disabled on closed response")
+		Logger.Warn().Msg("Write disabled on closed response")
 		return 0, io.EOF
 	}
 	if b.firstWrite {
@@ -177,18 +175,18 @@ func (b *streamingResponse) SetResponseError(e error) (err error) {
 		err = b.encoder.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
 		defer b.Close()
 		if err != nil {
-			log.Debug("Unable to send error information", "err", err)
+			Logger.Debug().Err(err).Msg("Unable to send error information")
 			return
 		}
 		return b.Close()
 	}
-	log.Warn("Setting error more than once!")
+	Logger.Warn().Msg("Setting error more than once!")
 	return
 }
 
 func (b *streamingResponse) SetResponseResult(r interface{}) error {
 	if b.isClosed {
-		log.Warn("Unable to set result on closed response")
+		Logger.Warn().Msg("Unable to set result on closed response")
 		return nil
 	}
 	if err := b.commit(); err != nil {
