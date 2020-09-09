@@ -282,7 +282,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
-	if ip.IsLoopback() {
+	if ip.IsLoopback() || ip == nil && r.RemoteAddr == "@" {
 		userData.allowPrivate = child.bind.AllowPrivate
 		if !userData.allowPrivate {
 			child.log.Debug().Msg("Request from loopback, but bindpoint will require authentification data")
@@ -301,7 +301,10 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 		writer = wrapWithFlusher(writer)
 	}
 
-	child.parent.processor.ProcessContext(r.Context(), request, writer)
+	if err := child.parent.processor.ProcessContext(r.Context(), request, writer); err != nil {
+		child.log.Error().Err(err).Msg("request failed")
+	}
+
 }
 
 func ListenAndServe(configuration *Config) error {

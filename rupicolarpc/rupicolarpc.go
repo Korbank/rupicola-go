@@ -676,8 +676,14 @@ func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request Reque
 	// We should just check if any write success
 	// NEW: Check behavior after using connection context
 	jsonRequest := p.spawnRequest(kontext, request, response)
-	jsonRequest.readFromTransport()
-	jsonRequest.process()
+
+	if err := jsonRequest.readFromTransport(); err != nil {
+		Logger.Debug().Err(err).Msg("transport error")
+	}
+
+	if err := jsonRequest.process(); err != nil {
+		Logger.Debug().Err(err).Msg("process")
+	}
 
 	return jsonRequest.Close()
 }
