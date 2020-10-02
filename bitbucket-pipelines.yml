@@ -3,7 +3,7 @@
 # Only use spaces to indent your .yml configuration.
 # -----
 # You can specify a custom docker image from Docker Hub as your build environment.
-image: golang:1.9
+image: golang:1.15
 
 pipelines:
   default:
@@ -13,6 +13,6 @@ pipelines:
           - mkdir -pv "${PACKAGE_PATH}"
           - tar -cO --exclude-vcs --exclude=bitbucket-pipelines.yml . | tar -xv -C "${PACKAGE_PATH}"
           - cd "${PACKAGE_PATH}/cmd/rupicola"
-          - go get -v
+          - GOFLAGS=-mod=vendor
           - go build -v
           - go test -v # test main package
