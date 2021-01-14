@@ -618,19 +618,24 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	switch converted := result.(type) {
 	case io.Reader:
 		// This might stall so just ensure we flush after some fixed time
-		go func() {
-			t := time.NewTimer(forcedFlushTimeout)
-			defer t.Stop()
+		// flush is required only on plain RPC method
+		switch f.req.OutputMode() {
+		case RPCMethod, unknownMethod:
+			go func() {
+				t := time.NewTimer(forcedFlushTimeout)
+				defer t.Stop()
 
-			select {
-			case <-f.ctx.Done(): // Meh, connection failed
-			case <-f.done: // Meh, we failed
-			case <-t.C:
-				f.log.Warn().Msg("forced flush after timeout")
-				// Force flush
-				f.rpcResponserPriv.Flush()
-			}
-		}()
+				select {
+				case <-f.ctx.Done(): // Meh, connection failed
+				case <-f.done: // Meh, we failed
+				case <-t.C:
+					f.log.Warn().Msg("forced flush after timeout")
+					// Force flush
+					f.rpcResponserPriv.Flush()
+				}
+			}()
+		}
+
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
 			f.log.Error().Err(f.err).Msg("stream copy failed")
