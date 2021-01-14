@@ -468,9 +468,10 @@ type jsonRPCrequestPriv struct {
 	requestData
 	ctx context.Context
 	rpcResponserPriv
-	err  error
-	req  RequestDefinition
-	p    jsonRpcProcessorPriv
+	err error
+	req RequestDefinition
+	p   jsonRpcProcessorPriv
+	// NOTE(m): Do we need separate 'done' channel if we have context?
 	done chan struct{}
 	log  log.Logger
 }
@@ -614,6 +615,18 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 
 	switch converted := result.(type) {
 	case io.Reader:
+		// This might stall so just ensure we flush after some fixed time
+		go func() {
+			t := time.NewTimer(time.Second * 10)
+			defer t.Stop()
+			select {
+			case <-f.ctx.Done(): // Meh, connection failed
+			case <-f.done: // Meh, we failed
+			case <-t.C:
+				// Force flush
+				f.rpcResponserPriv.Flush()
+			}
+		}()
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
 			f.log.Error().Err(f.err).Msg("stream copy failed")
@@ -671,6 +684,7 @@ func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer
 	return p.ProcessContext(context.Background(), request, response)
 }
 
+// ProcessContext : Parse and process request from data
 func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request RequestDefinition, response io.Writer) error {
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
 	// We should just check if any write success
