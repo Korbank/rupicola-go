@@ -26,10 +26,10 @@ type rpcFlusher interface {
 type rpcResponserPriv interface {
 	RPCResponser
 	io.WriteCloser
+	rpcFlusher
 	SetID(*interface{})
 	Writer() io.Writer
 	MaxResponse(int64)
-	Flush()
 }
 
 type baseResponse struct {

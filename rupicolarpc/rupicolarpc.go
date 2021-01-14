@@ -41,6 +41,9 @@ const (
 	StreamingMethod MethodType = 4
 	unknownMethod   MethodType = 0
 )
+const (
+	forcedFlushTimeout = time.Second * 10
+)
 
 func (me MethodType) String() string {
 	switch me {
@@ -616,12 +619,14 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	case io.Reader:
 		// This might stall so just ensure we flush after some fixed time
 		go func() {
-			t := time.NewTimer(time.Second * 10)
+			t := time.NewTimer(forcedFlushTimeout)
 			defer t.Stop()
+
 			select {
 			case <-f.ctx.Done(): // Meh, connection failed
 			case <-f.done: // Meh, we failed
 			case <-t.C:
+				f.log.Warn().Msg("forced flush after timeout")
 				// Force flush
 				f.rpcResponserPriv.Flush()
 			}
