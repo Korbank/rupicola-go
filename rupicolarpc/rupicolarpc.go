@@ -352,7 +352,6 @@ type JsonRpcProcessor interface {
 	AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef
 	AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef
 	AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef
-	Process(request RequestDefinition, response io.Writer) error
 	ProcessContext(ctx context.Context, request RequestDefinition, response io.Writer) error
 	ExecutionTimeout(metype MethodType, timeout time.Duration)
 }
@@ -677,11 +676,6 @@ func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 		return nil, ErrMethodNotFound
 	}
 	return m, nil
-}
-
-// Process : Parse and process request from data
-func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer) error {
-	return p.ProcessContext(context.Background(), request, response)
 }
 
 // ProcessContext : Parse and process request from data
