@@ -3,7 +3,6 @@ package rupicola
 import (
 	"crypto/tls"
 	"errors"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -47,7 +46,7 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 		// permissions (at this point no other IO opeations are running)
 		// and then restore previous umask
 		oldmask := myUmask(int(bind.Mode) ^ 0777)
-		ln, err := net.Listen("unix", bind.Address)
+		ln, err := ListenUnixLock(bind.Address)
 		myUmask(oldmask)
 
 		if err != nil {
