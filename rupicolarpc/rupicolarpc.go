@@ -41,6 +41,9 @@ const (
 	StreamingMethod MethodType = 4
 	unknownMethod   MethodType = 0
 )
+const (
+	forcedFlushTimeout = time.Second * 10
+)
 
 func (me MethodType) String() string {
 	switch me {
@@ -352,7 +355,6 @@ type JsonRpcProcessor interface {
 	AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef
 	AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef
 	AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef
-	Process(request RequestDefinition, response io.Writer) error
 	ProcessContext(ctx context.Context, request RequestDefinition, response io.Writer) error
 	ExecutionTimeout(metype MethodType, timeout time.Duration)
 }
@@ -468,9 +470,10 @@ type jsonRPCrequestPriv struct {
 	requestData
 	ctx context.Context
 	rpcResponserPriv
-	err  error
-	req  RequestDefinition
-	p    jsonRpcProcessorPriv
+	err error
+	req RequestDefinition
+	p   jsonRpcProcessorPriv
+	// NOTE(m): Do we need separate 'done' channel if we have context?
 	done chan struct{}
 	log  log.Logger
 }
@@ -614,6 +617,25 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 
 	switch converted := result.(type) {
 	case io.Reader:
+		// This might stall so just ensure we flush after some fixed time
+		// flush is required only on plain RPC method
+		switch f.req.OutputMode() {
+		case RPCMethod, unknownMethod:
+			go func() {
+				t := time.NewTimer(forcedFlushTimeout)
+				defer t.Stop()
+
+				select {
+				case <-f.ctx.Done(): // Meh, connection failed
+				case <-f.done: // Meh, we failed
+				case <-t.C:
+					f.log.Warn().Msg("forced flush after timeout")
+					// Force flush
+					f.rpcResponserPriv.Flush()
+				}
+			}()
+		}
+
 		_, f.err = io.Copy(f.rpcResponserPriv, converted)
 		if f.err != nil {
 			f.log.Error().Err(f.err).Msg("stream copy failed")
@@ -666,11 +688,7 @@ func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, e
 	return m, nil
 }
 
-// Process : Parse and process request from data
-func (p *jsonRpcProcessor) Process(request RequestDefinition, response io.Writer) error {
-	return p.ProcessContext(context.Background(), request, response)
-}
-
+// ProcessContext : Parse and process request from data
 func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request RequestDefinition, response io.Writer) error {
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
 	// We should just check if any write success

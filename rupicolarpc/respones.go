@@ -20,9 +20,13 @@ type RPCResponser interface {
 	SetResponseError(error) error
 }
 
+type rpcFlusher interface {
+	Flush()
+}
 type rpcResponserPriv interface {
 	RPCResponser
 	io.WriteCloser
+	rpcFlusher
 	SetID(*interface{})
 	Writer() io.Writer
 	MaxResponse(int64)
@@ -43,6 +47,12 @@ func newBaseResponse(t io.Writer, l LimitedWriter) baseResponse {
 		resultSet: false,
 		id:        &nilInterface, // this will ensure we will send data on errors
 		encoder:   json.NewEncoder(l),
+	}
+}
+
+func (b *baseResponse) Flush() {
+	if f, ok := b.transport.(rpcFlusher); ok {
+		f.Flush()
 	}
 }
 

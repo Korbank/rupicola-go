@@ -1,15 +1,10 @@
 package rupicola
 
 import (
-	"crypto/tls"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 	"time"
 
@@ -53,61 +48,6 @@ func ListenKeepAlive(network, address string) (ln net.Listener, err error) {
 	return
 }
 
-// Bind to interface and Start listening using provided mux and limits
-func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
-	srv := &http.Server{
-		Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
-		Handler:     mux,
-		ReadTimeout: limits.ReadTimeout,
-		IdleTimeout: limits.ReadTimeout,
-	}
-
-	switch bind.Type {
-	case HTTP:
-		Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.Serve(ln)
-
-	case HTTPS:
-		srv.TLSConfig = &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			PreferServerCipherSuites: true,
-		}
-		Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.ServeTLS(ln, bind.Cert, bind.Key)
-
-	case Unix:
-		//todo: check
-		Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
-		srv.Addr = bind.Address
-		// Change umask to ensure socker is created with right
-		// permissions (at this point no other IO opeations are running)
-		// and then restore previous umask
-		oldmask := myUmask(int(bind.Mode) ^ 0777)
-		ln, err := net.Listen("unix", bind.Address)
-		myUmask(oldmask)
-
-		if err != nil {
-			return err
-		}
-
-		defer ln.Close()
-		if err := os.Chown(bind.Address, bind.UID, bind.GID); err != nil {
-			Logger.Error().Str("address", bind.Address).Int("uid", bind.UID).Int("gid", bind.GID).Msg("Setting permission failed")
-			return err
-		}
-		return srv.Serve(ln)
-	}
-	return errors.New("Unknown case")
-}
-
 type failureReader struct {
 	error
 }
@@ -135,12 +75,6 @@ type rupicolaRPCContext struct {
 	parent            *rupicolaProcessor
 }
 
-type rupicolaProcessor struct {
-	limits    Limits
-	processor rupicolarpc.JsonRpcProcessor
-	config    *Config
-}
-
 type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
 	bind   *Bind
@@ -148,47 +82,8 @@ type rupicolaProcessorChild struct {
 	log    log.Logger
 }
 
-// Start listening (this exits only on failure)
-func (child *rupicolaProcessorChild) listen() error {
-	return child.bind.Bind(child.mux, child.parent.config.Limits)
-}
-
 func (child *rupicolaProcessorChild) config() *Config {
 	return child.parent.config
-}
-
-// Create separate context for given bind point (required for concurrent listening)
-func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
-	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
-	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
-	return child
-}
-
-func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
-	rupicolaProcessor := &rupicolaProcessor{
-		config:    conf,
-		limits:    conf.Limits,
-		processor: rupicolarpc.NewJsonRpcProcessor()}
-
-	for k, v := range conf.Methods {
-		var metype rupicolarpc.MethodType
-		if v.Streamed {
-			metype = rupicolarpc.StreamingMethodLegacy
-		} else {
-			metype = rupicolarpc.RPCMethod
-		}
-
-		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
-
-		if v.Limits.ExecTimeout >= 0 {
-			method.ExecutionTimeout(v.Limits.ExecTimeout)
-		}
-		if v.Limits.MaxResponse >= 0 {
-			method.MaxSize(uint(v.Limits.MaxResponse))
-		}
-	}
-	return rupicolaProcessor
 }
 
 type httpJSONRequest struct {
@@ -305,19 +200,4 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 		child.log.Error().Err(err).Msg("request failed")
 	}
 
-}
-
-func ListenAndServe(configuration *Config) error {
-	rupicolaProcessor := newRupicolaProcessorFromConfig(configuration)
-
-	failureChannel := make(chan error)
-	for _, bind := range configuration.Protocol.Bind {
-		child := rupicolaProcessor.spawnChild(bind)
-		Logger.Info().Str("bind", fmt.Sprintf("%+v", bind)).Msg("Spawning worker")
-		go func() {
-			failureChannel <- child.listen()
-		}()
-	}
-	Logger.Info().Msg("Listening for requests...")
-	return <-failureChannel
 }

@@ -28,6 +28,12 @@ func newRPCResponse(w io.Writer) rpcResponserPriv {
 	}
 }
 
+func (b *rpcResponse) Flush() {
+	if f, ok := b.raw.(rpcFlusher); ok {
+		f.Flush()
+	}
+}
+
 func (b *rpcResponse) Close() error {
 	if b.dataSent {
 		return nil
