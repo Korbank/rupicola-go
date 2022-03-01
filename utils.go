@@ -77,7 +77,7 @@ type rupicolaRPCContext struct {
 
 type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
-	bind   *Bind
+	bind   *Bind2
 	mux    *http.ServeMux
 	log    log.Logger
 }
@@ -178,7 +178,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
 	if ip.IsLoopback() || ip == nil && r.RemoteAddr == "@" {
-		userData.allowPrivate = child.bind.AllowPrivate
+		userData.allowPrivate = child.bind.internal.AllowPrivate
 		if !userData.allowPrivate {
 			child.log.Debug().Msg("Request from loopback, but bindpoint will require authentification data")
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
+	"github.com/korbank/rupicola-go/config"
 )
 
 func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
@@ -41,7 +42,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg.evalueateArgs(params, buffer)
+		skip, err := evalueateArgs(&arg, params, buffer)
 		if err != nil {
 			m.logger.Error().Err(err).Msg("error")
 			return nil, nil, err
@@ -86,6 +87,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 		//out.SetResponseError(err)
 		return nil, err
 	}
+	m.logger.Debug().Strs("args", process.Args).Msg("process prepared")
 	stdout, err := process.StdoutPipe()
 	if err != nil {
 		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
@@ -100,7 +102,7 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	writer := io.Writer(pw)
 	reader := io.ReadCloser(pr)
 
-	if m.Encoding == Base64 {
+	if m.Encoding == config.Base64 {
 		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
