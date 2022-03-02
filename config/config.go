@@ -541,7 +541,7 @@ type InvokeInfoDef struct {
 	Exec  string
 	Delay time.Duration
 	Args  []MethodArgs
-	RunAs RunAs
+	RunAs RunAs `yaml:"run-as"`
 }
 
 // MethodDef ...

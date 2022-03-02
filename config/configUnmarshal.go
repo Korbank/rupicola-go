@@ -35,7 +35,7 @@ func (b *Bind) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type yamlFix Bind
 	v := yamlFix(*b)
 	if err := unmarshal(&v); err != nil {
-		return nil
+		return err
 	}
 	*b = Bind(v)
 	return nil
