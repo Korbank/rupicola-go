@@ -10,10 +10,10 @@ import (
 	"github.com/korbank/rupicola-go/config"
 )
 
-type Bind2 config.Bind
+type Bind config.Bind
 
 // Bind to interface and Start listening using provided mux and limits
-func (bind *Bind2) Bind(mux *http.ServeMux, limits config.Limits) error {
+func (bind *Bind) Bind(mux *http.ServeMux, limits config.Limits) error {
 	srv := &http.Server{
 		Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
 		Handler:     mux,
