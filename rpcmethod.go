@@ -3,13 +3,14 @@ package rupicola
 import (
 	"bytes"
 	"context"
+	"encoding/ascii85"
 	"encoding/base64"
 	"io"
 	"os/exec"
 	"time"
 
-	"github.com/korbank/rupicola-go/rupicolarpc"
 	"github.com/korbank/rupicola-go/config"
+	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
 func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
@@ -102,12 +103,22 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	writer := io.Writer(pw)
 	reader := io.ReadCloser(pr)
 
-	if m.Encoding == config.Base64 {
+	switch m.Encoding {
+	case config.Base64:
 		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder
+	case config.Base85:
+		writerEncoder := ascii85.NewEncoder(writer)
+		defer writerEncoder.Close()
+		writer = writerEncoder
+	case config.Utf8:
+		// NOOP
+	default:
+		panic("unknown encoding")
 	}
+
 	go func() {
 		time.Sleep(m.InvokeInfo.Delay)
 		m.logger.Debug().Msg("read loop started")
