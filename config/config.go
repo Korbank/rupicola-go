@@ -507,8 +507,8 @@ type Protocol struct {
 type Limits struct {
 	ReadTimeout time.Duration `yaml:"read-timeout"`
 	ExecTimeout time.Duration `yaml:"exec-timeout"`
-	PayloadSize uint32        `yaml:"payload-size"`
-	MaxResponse uint32        `yaml:"max-response"`
+	PayloadSize int64        `yaml:"payload-size"`
+	MaxResponse int64        `yaml:"max-response"`
 }
 
 func DefaultLimits() Limits {
@@ -534,8 +534,8 @@ type MethodParam struct {
 
 // RunAs ...
 type RunAs struct {
-	UID uint32
-	GID uint32
+	UID int
+	GID int
 }
 type InvokeInfoDef struct {
 	Exec  string
@@ -559,10 +559,7 @@ type RawMethodDef struct {
 }
 
 // Limits ...
-type MethodLimits struct {
-	ExecTimeout time.Duration
-	MaxResponse int64
-}
+type MethodLimits Limits
 
 type MethodArgs struct {
 	Param    string
@@ -603,7 +600,7 @@ func (m RawMethodDef) Validate() error {
 		} else {
 			// Fatal, or just return error?
 			m.logger.Error().Str("name", k).Msg("undeclared param")
-			return fmt.Errorf("Undeclared param '%v' in arguments", k)
+			return fmt.Errorf("undeclared param '%v' in arguments", k)
 		}
 	}
 

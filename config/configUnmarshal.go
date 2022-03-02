@@ -7,38 +7,27 @@ import (
 	"time"
 )
 
-func (m *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var limits struct {
-		ExecTimeout uint64
-		MaxResponse int64
-	}
-	if err := unmarshal(&limits); err != nil {
-		return err
-	}
-	m.MaxResponse = limits.MaxResponse
-	m.ExecTimeout = time.Duration(limits.ExecTimeout * uint64(time.Millisecond))
-	return nil
-}
-
 func (m *RawMethodDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// ensure we have required defaults sets before
+	// Use alias, so we dont hit stack overflow invoking self over and over
+	type yamlFix RawMethodDef
 	m.Limits = MethodLimits{
 		ExecTimeout: -1,
 		MaxResponse: -1,
 	}
 	m.InvokeInfo.RunAs = RunAs{
-		UID: uint32(os.Getuid()),
-		GID: uint32(os.Getgid()),
+		UID: os.Getuid(),
+		GID: os.Getgid(),
 	}
-	// Use alias, so we dont hit stack overflow invoking self over and over
-	type yamlFix RawMethodDef
 	v := yamlFix(*m)
 	if err := unmarshal(&v); err != nil {
 		return err
 	}
+	v.Limits.ExecTimeout = time.Duration(v.Limits.ExecTimeout) * time.Millisecond
+	v.InvokeInfo.Delay = time.Duration(v.InvokeInfo.Delay) * time.Millisecond
 	*m = RawMethodDef(v)
 	return nil
 }
+
 func (b *Bind) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	b.UID = -1
 	b.GID = -1

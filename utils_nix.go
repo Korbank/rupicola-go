@@ -40,11 +40,11 @@ func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 // SetUserGroup assign UID and GID to process
 func SetUserGroup(process *exec.Cmd, m *MethodDef) {
 	// Requires root to work?
-	m.logger.Debug().Uint32("uid", m.InvokeInfo.RunAs.UID).Uint32("gid", m.InvokeInfo.RunAs.GID).Msg("Nix code")
+	m.logger.Debug().Int("uid", m.InvokeInfo.RunAs.UID).Int("gid", m.InvokeInfo.RunAs.GID).Msg("Nix code")
 	process.SysProcAttr = &syscall.SysProcAttr{}
 	process.SysProcAttr.Credential = &syscall.Credential{
-		Uid:         m.InvokeInfo.RunAs.UID,
-		Gid:         m.InvokeInfo.RunAs.GID,
+		Uid:         uint32(m.InvokeInfo.RunAs.UID),
+		Gid:         uint32(m.InvokeInfo.RunAs.GID),
 		NoSetGroups: true,
 	}
 }

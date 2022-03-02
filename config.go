@@ -22,15 +22,6 @@ var Logger = log.Nop()
 
 // MethodDef ...
 type MethodDef struct {
-	// Streamed   bool
-	// Private    bool
-	// Encoding   config.MethodEncoding
-	// Params     map[string]config.MethodParam
-	// InvokeInfo config.InvokeInfoDef
-	// // Pointer because we need to know when its unsed
-	// Limits *config.MethodLimits
-	// // unused parameter
-	// Output interface{}
 	config.RawMethodDef
 	logger log.Logger
 }
@@ -224,17 +215,7 @@ func ReadConfig(configFilePath string) (*Config, error) {
 		meth.logger.Info().Str("details", fmt.Sprintf("%+v", meth)).Msg("add new method")
 		c.Methods[methodName] = &meth
 	}
-	// logsSecrion := x.Log//.Get("log")
 	c.Log = x.Log
-	// c.Log.Backend = logsSec err = parseBackend(logsSecrion.Get("backend").AsString(""))
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// c.Log.LogLevel, err = parseLoglevel(logsSecrion.Get("level").AsString("warn"))
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// c.Log.Path = logsSecrion.Get("path").AsString("")
 	return c, nil
 }
 

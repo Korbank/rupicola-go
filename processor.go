@@ -41,7 +41,7 @@ func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
 
 // Create separate context for given bind point (required for concurrent listening)
 func (proc *rupicolaProcessor) spawnChild(bind *config.Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{proc, &Bind2{*bind}, http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
+	child := &rupicolaProcessorChild{proc, (*Bind2)(bind), http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
 	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
 	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
 	return child

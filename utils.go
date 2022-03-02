@@ -4,7 +4,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -62,10 +61,6 @@ func (f *failureReader) Read([]byte) (int, error) {
 var (
 	rpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
 )
-
-type rpcMethod *MethodDef
-
-type cmdEx *exec.Cmd
 
 type rupicolaRPCContext struct {
 	isAuthorized      bool
@@ -150,7 +145,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 	// Check for "payload size". According to spec
 	// Payload = 0 mean ignore
-	if child.parent.limits.PayloadSize > 0 && r.ContentLength > int64(child.parent.limits.PayloadSize) {
+	if child.parent.limits.PayloadSize > 0 && r.ContentLength > child.parent.limits.PayloadSize {
 		w.WriteHeader(http.StatusBadRequest)
 		child.log.Warn().Msg("request too big")
 		return
@@ -178,7 +173,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
 	if ip.IsLoopback() || ip == nil && r.RemoteAddr == "@" {
-		userData.allowPrivate = child.bind.internal.AllowPrivate
+		userData.allowPrivate = child.bind.AllowPrivate
 		if !userData.allowPrivate {
 			child.log.Debug().Msg("Request from loopback, but bindpoint will require authentification data")
 		}
