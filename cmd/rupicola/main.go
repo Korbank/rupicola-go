@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/korbank/rupicola-go"
+	cfg "github.com/korbank/rupicola-go/config"
 
 	log "github.com/rs/zerolog"
 )
@@ -29,7 +30,7 @@ func registerCleanupAtExit(config *rupicola.Config) {
 			default:
 				// Stop listening (and unlink the socket if unix type):
 				for _, bind := range config.Protocol.Bind {
-					if bind.Type != rupicola.Unix {
+					if bind.Type != cfg.Unix {
 						continue
 					}
 					if err := os.Remove(bind.Address); err != nil {
@@ -77,7 +78,7 @@ func main() {
 		os.Exit(1)
 	}
 	if *pretty {
-		configuration.Log.Backend = rupicola.BackendKeep
+		configuration.Log.Backend = cfg.BackendKeep
 	}
 	configuration.SetLogging()
 
