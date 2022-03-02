@@ -42,7 +42,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := evalueateArgs(&arg, params, buffer)
+		skip, err := evalueateArgs(arg, params, buffer)
 		if err != nil {
 			m.logger.Error().Err(err).Msg("error")
 			return nil, nil, err

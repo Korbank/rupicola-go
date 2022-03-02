@@ -257,15 +257,6 @@ func NewConfig() Config {
 	}
 }
 
-// func (c *config) Get(key ...string) Value {
-// 	var currentValue Value
-// 	currentValue = &c.root
-// 	for _, k := range key {
-// 		currentValue = currentValue.Get(k)
-// 	}
-// 	return currentValue
-// }
-
 func searchFiles(path string, required bool) (out []string, err error) {
 	fileInfo, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -705,7 +696,6 @@ func (c *config) Load(paths ...string) error {
 				b.Mode = FileMode(0666)
 			}
 		}
-		// c.root.Mapa = mergeMap(c.root.Mapa, val.Mapa)
 		mergeConfig(&c.rawConfig, specialOne)
 	}
 	// ensure empty method limits are now filled with proper values

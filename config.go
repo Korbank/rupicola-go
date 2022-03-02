@@ -1,8 +1,8 @@
 package rupicola
 
 import (
-	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 
@@ -28,10 +28,8 @@ type MethodDef struct {
 
 // Config ...
 type Config struct {
-	Protocol config.Protocol
-	Limits   config.Limits
-	Log      config.LogDef
-	Methods  map[string]*MethodDef
+	config.Config
+	Methods map[string]*MethodDef
 }
 
 // CheckParams ensures that all required paramters are present and have valid type
@@ -104,7 +102,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 	return nil
 }
 
-func (conf *Config) isValidAuth(login string, password string) bool {
+func (conf Config) isValidAuth(login string, password string) bool {
 	if conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
 		passOk, _ := pwhash.Verify(password, conf.Protocol.AuthBasic.Password)
@@ -114,112 +112,28 @@ func (conf *Config) isValidAuth(login string, password string) bool {
 	return true
 }
 
-// NewConfig - create configuration with default values
-func NewConfig() *Config {
-	var cfg Config
-	cfg.Protocol.URI.RPC = "/rpc"
-	cfg.Protocol.URI.Streamed = "/streaming"
-	cfg.Limits = config.Limits{10000, 0, 5242880, 5242880}
-	return &cfg
-}
-
 // ReadConfig from file
-func ReadConfig(configFilePath string) (*Config, error) {
-	x := config.NewConfig()
-	if err := x.Load(configFilePath); err != nil {
-		return nil, err
+func ReadConfig(configFilePath string) (Config, error) {
+	c := Config{
+		Config: config.NewConfig(),
+	}
+	if err := c.Load(configFilePath); err != nil {
+		return c, err
 	}
 
-	c := NewConfig()
-	c.Limits = x.Limits
-	// limitsSection := x.Limits
-	// c.Limits = Limits{
-	// 	limitsSection.Get("read-timeout").Duration(10000) * time.Millisecond,
-	// 	limitsSection.Get("exec-timeout").Duration(0) * time.Millisecond,
-	// 	limitsSection.Get("payload-size").Uint32(5242880),
-	// 	limitsSection.Get("max-response").Uint32(5242880),
-	// }
-	c.Protocol = x.Protocol
-	// var err error
-	// protocolSection := x.Protocol // x.Get("protocol")
-	// c.Protocol.AuthBasic.Login = protocolSection.Get("auth-basic", "login").AsString("")
-	// c.Protocol.AuthBasic.Password = protocolSection.Get("auth-basic", "password").AsString("")
-	// c.Protocol.URI.RPC = protocolSection.Get("uri", "rpc").AsString("/jsonrpc")
-	// c.Protocol.URI.Streamed = protocolSection.Get("uri", "streamed").AsString("/streaming")
-	// for _, bind := range protocolSection.Get("bind").Array(nil) {
-	// 	b := new(Bind)
-	// 	b.Address = bind.Get("address").AsString("") // error on empty
-	// 	b.AllowPrivate = bind.Get("allow_private").Bool(false)
-	// 	b.Cert = bind.Get("cert").AsString("")
-	// 	b.GID = int(bind.Get("gid").Int32(int32(os.Getgid())))
-	// 	b.Key = bind.Get("key").AsString("")
-	// 	b.Mode = os.FileMode(bind.Get("mode").Uint32(666)) // need love...
-	// 	shamefullFileModeFix(&b.Mode)
-
-	// 	b.Port = uint16(bind.Get("port").Int32(0))
-	// 	b.Type, err = parseBindType(bind.Get("type").AsString(""))
-	// 	b.UID = int(bind.Get("uid").Int32(int32(os.Getuid())))
-	// 	c.Protocol.Bind = append(c.Protocol.Bind, b)
-	// }
-
 	c.Methods = make(map[string]*MethodDef)
-	methodsSection := x.Methods                 //.Get("methods")
-	for methodName, v := range methodsSection { //}.Map() {
-		meth := MethodDef {
-			RawMethodDef: v,
-			logger: Logger.With().Str("method", methodName).Logger(),
+	for methodName := range c.Config.Methods {
+		meth := MethodDef{
+			RawMethodDef: c.Config.Methods[methodName],
+			logger:       Logger.With().Str("method", methodName).Logger(),
 		}
-		//meth.logger = Logger.With().Str("method", methodName).Logger()
-		//meth.Limits = &v.Limits
-		//meth.Encoding = v.Encoding // parseEncoding(v.Get("encoding").AsString("utf8"))
-		// meth.InvokeInfo.Delay = v.InvokeInfo.Delay
-		// meth.InvokeInfo.Exec = v.InvokeInfo.Exec
-		// meth.InvokeInfo.RunAs = v.InvokeInfo.RunAs
-		//meth.InvokeInfo = v.InvokeInfo
-		// meth.InvokeInfo.Delay = v.Get("invoke", "delay").Duration(0) * time.Second
-		// meth.InvokeInfo.Exec = v.Get("invoke", "exec").AsString("")
-		// meth.InvokeInfo.RunAs.GID = v.Get("invoke", "run-as", "gid").Uint32(uint32(os.Getegid()))
-		// meth.InvokeInfo.RunAs.UID = v.Get("invoke", "run-as", "uid").Uint32(uint32(os.Getuid()))
-		// args := v.InvokeInfo.Args // v.Get("invoke", "args").Array(nil)
-		// if len(args) != 0 {
-		// 	meth.InvokeInfo.Args = make([]methodArgs, len(args))
-		// 	for i, a := range args {
-		// 		meth.InvokeInfo.Args[i] = methodArgs{
-		// 			Param:  a.Param,
-		// 			Skip:   a.Skip,
-		// 			Static: a.Static,
-		// 			Child:  a.Child,
-		// 		}
-		// 	}
-		// }
-
-		//meth.Output = v.Output     //.Get("output")
-		//meth.Private = v.Private   //.Get("private").Bool(false)
-		//meth.Streamed = v.Streamed //.Get("streamed").Bool(false)
-		//meth.Params = v.Params
-		// methParams := v.Params//.Get("params").Map()
-		// if len(methParams) != 0 {
-		// 	meth.Params = make(map[string]config.MethodParam)
-		// 	for paramName, v := range methParams {
-		// 		// tyype, err := parseMethodParamType(v.Get("type").AsString("")) // required
-		// 		tyype := v.Type
-		// 		// if err != nil {
-		// 		// 	meth.logger.Error().Str("name", "type").Msg("required field missing")
-		// 		// }
-		// 		optional := v.Optional// v.Get("optional").Bool(false)
-		// 		defaultVal := v.DefaultVal//.Get("default")
-		// 		meth.logger.Trace().Str("paraName", paramName).Send()
-		// 		meth.Params[paramName] = MethodParam{Optional: optional, Type: tyype, defaultVal: defaultVal}
-		// 	}
-		// }
 		meth.logger.Info().Str("details", fmt.Sprintf("%+v", meth)).Msg("add new method")
 		c.Methods[methodName] = &meth
 	}
-	c.Log = x.Log
 	return c, nil
 }
 
-func evalueateArgs(m *config.MethodArgs, arguments map[string]interface{}, output *bytes.Buffer) (bool, error) {
+func evalueateArgs(m config.MethodArgs, arguments map[string]interface{}, output io.StringWriter) (bool, error) {
 	if m.Static {
 		_, e := output.WriteString(m.Param)
 		if e != nil {
@@ -256,7 +170,7 @@ func evalueateArgs(m *config.MethodArgs, arguments map[string]interface{}, outpu
 		for _, arg := range m.Child {
 			var skip bool
 			var err error
-			if skip, err = evalueateArgs(&arg, arguments, output); err != nil {
+			if skip, err = evalueateArgs(arg, arguments, output); err != nil {
 				return skip, err
 			}
 			skipCompound = skipCompound || skip
@@ -271,7 +185,7 @@ func evalueateArgs(m *config.MethodArgs, arguments map[string]interface{}, outpu
 
 // SetLogging to expected values
 // THIS IS NOT THREAD SAFE
-func (conf *Config) SetLogging() {
+func (conf Config) SetLogging() {
 	var logLevel log.Level
 	switch conf.Log.LogLevel {
 	case config.LLError:
