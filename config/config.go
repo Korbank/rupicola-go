@@ -419,8 +419,10 @@ func parseEncoding(value string) (MethodEncoding, error) {
 		return Base64, nil
 	case "utf-8", "utf8":
 		return Utf8, nil
+	case "base85", "ascii85":
+		return Base85, nil
 	default:
-		return Utf8, errors.New("Unknown output type")
+		return Utf8, fmt.Errorf("unknown encoding: %s", value)
 	}
 }
 

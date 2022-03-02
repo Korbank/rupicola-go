@@ -9,7 +9,7 @@ import (
 
 func (m *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var name string
-	if err := unmarshal(name); err != nil {
+	if err := unmarshal(&name); err != nil {
 		return err
 	}
 	me, err := parseEncoding(name)
