@@ -7,9 +7,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"text/template"
+	"text/template/parse"
 	"time"
 
 	log "github.com/rs/zerolog"
@@ -23,29 +22,16 @@ var (
 
 // Value represents any underlying value
 type Value interface {
-	Int32(def int32) int32
-	Uint32(def uint32) uint32
 	Int64(def int64) int64
-	Duration(def time.Duration) time.Duration
 	Map() map[string]Value
 	Array(def []interface{}) []Value
 	AsString(def string) string
 	Bool(def bool) bool
 	Get(key ...string) Value
-	get(key string) Value
 	IsValid() bool
 	IsArray() bool
 	IsMap() bool
 	Raw() interface{}
-}
-type mapValue struct {
-	Mapa map[string]Value
-}
-type listValue struct {
-	Lista []interface{}
-}
-type scalarValue struct {
-	Other interface{}
 }
 
 type MapOfValue map[string]Value
@@ -206,7 +192,7 @@ func (v *value) get(key string) Value {
 func (v *value) Get(keys ...string) Value {
 	current := Value(v)
 	for _, key := range keys {
-		current = current.get(key)
+		current = current.(*value).get(key)
 	}
 	return current
 }
@@ -637,6 +623,27 @@ type rawConfig struct {
 	Methods  map[string]RawMethodDef
 }
 
+func listNodeFieldsV2(node parse.Node) []string {
+	var res []string
+	if node.Type() == parse.NodeAction {
+		res = append(res, node.String())
+	}
+	if ln, ok := node.(*parse.ListNode); ok {
+		for _, n := range ln.Nodes {
+			res = append(res, listNodeFieldsV2(n)...)
+		}
+	}
+	return res
+}
+
+func listUsedVariables(nodesName []string) []string {
+	names := make([]string, len(nodesName))
+	for i := range nodesName {
+		names[i] = strings.TrimPrefix(strings.TrimSuffix(nodesName[i], "}}"), "{{.")
+	}
+	return names
+}
+
 func fromVal(value Value) (MethodArgs, error) {
 	var out MethodArgs
 
@@ -644,18 +651,12 @@ func fromVal(value Value) (MethodArgs, error) {
 	if value.IsMap() {
 		x := value.Get("template").AsString("")
 		if x != "" {
-			t, err := template.New("new").Parse(x)
-			if err != nil {
-				println(err.Error())
-			}
-			a := make(map[string]string)
-			a["ip"] = "1000"
-			t.Execute(os.Stdout, a)
-			println(t)
+			return MethodArgs{}, errors.New("template not supported yet")
+		} else {
+			out.Param = value.Get("param").AsString("")
+			out.Skip = value.Get("skip").Bool(false)
+			out.Static = false
 		}
-		out.Param = value.Get("param").AsString("")
-		out.Skip = value.Get("skip").Bool(false)
-		out.Static = false
 	} else if value.IsArray() {
 		asArray := value.Array(nil)
 		out.Child = make([]MethodArgs, len(asArray))
@@ -669,195 +670,6 @@ func fromVal(value Value) (MethodArgs, error) {
 		out.Skip = false
 	}
 	return out, err
-}
-
-func (m *MethodLimits) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var limits struct {
-		ExecTimeout uint64
-		MaxResponse int64
-	}
-	if err := unmarshal(&limits); err != nil {
-		return err
-	}
-	m.MaxResponse = limits.MaxResponse
-	m.ExecTimeout = time.Duration(limits.ExecTimeout * uint64(time.Millisecond))
-	return nil
-}
-
-func (m *RawMethodDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// ensure we have required defaults sets before
-	m.Limits = MethodLimits{
-		ExecTimeout: -1,
-		MaxResponse: -1,
-	}
-	m.InvokeInfo.RunAs = RunAs{
-		UID: uint32(os.Getuid()),
-		GID: uint32(os.Getgid()),
-	}
-	// Use alias, so we dont hit stack overflow invoking self over and over
-	type yamlFix RawMethodDef
-	v := yamlFix(*m)
-	if err := unmarshal(&v); err != nil {
-		return err
-	}
-	*m = RawMethodDef(v)
-	return nil
-}
-func (b *Bind) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	b.UID = -1
-	b.GID = -1
-
-	type yamlFix Bind
-	v := yamlFix(*b)
-	if err := unmarshal(&v); err != nil {
-		return nil
-	}
-	*b = Bind(v)
-	return nil
-}
-
-func (fm *FileMode) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var name string
-	if err := unmarshal(&name); err != nil {
-		return err
-	}
-	name = strings.ToLower(name)
-	name = strings.TrimPrefix(name, "0o")
-	val, err := strconv.ParseUint(name, 8, 9)
-	if err != nil {
-		return err
-	}
-	*fm = FileMode(val)
-	return nil
-}
-
-func (mv *MapOfValue) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var tmp map[string]*value
-	if err := unmarshal(&tmp); err != nil {
-		return err
-	}
-	mav := make(MapOfValue)
-	for k, v := range tmp {
-		mav[k] = v
-	}
-	*mv = mav
-	return nil
-}
-func (lv *ListOfValue) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var tmp []*value
-	if err := unmarshal(&tmp); err != nil {
-		return err
-	}
-	lav := make(ListOfValue, len(tmp))
-	for i := range tmp {
-		lav[i] = tmp[i]
-	}
-	*lv = lav
-	return nil
-}
-
-func (ma *MethodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var v value
-	if err := unmarshal(&v); err != nil {
-		return err
-	}
-	a, err := fromVal(&v)
-	if err != nil {
-		return err
-	}
-	*ma = a
-	return nil
-}
-func (v *value) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var param struct {
-		Param string
-		Skip  bool
-	}
-	if err := unmarshal(&param); err == nil {
-		v.Mapa = make(MapOfValue)
-		v.Mapa["param"] = &value{Other: param.Param}
-		v.Mapa["skip"] = &value{Other: param.Skip}
-		return nil
-	}
-	if err := unmarshal(&v.Lista); err == nil {
-		return nil
-	}
-	if err := unmarshal(&v.Mapa); err == nil {
-		return nil
-	}
-	return unmarshal(&v.Other)
-}
-func (mpt *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var name string
-	if err := unmarshal(&name); err != nil {
-		return err
-	}
-	pt, err := parseMethodParamType(name)
-	if err != nil {
-		return err
-	}
-	*mpt = pt
-	return nil
-}
-
-func (bt *BindType) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var name string
-	if err := unmarshal(&name); err != nil {
-		return err
-	}
-	b, err := parseBindType(name)
-	if err != nil {
-		return err
-	}
-	*bt = b
-	return nil
-}
-
-func (i *rawInclude) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// this can be `string` or map[string]bool
-	var complex map[string]bool
-	if err := unmarshal(&complex); err == nil {
-		for k, v := range complex {
-			i.Path = k
-			i.Required = v
-			break
-		}
-		return nil
-	}
-
-	if err := unmarshal(&i.Path); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (ll *LogLevel) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var name string
-	if err := unmarshal(&name); err != nil {
-		return err
-	}
-	l, err := parseLoglevel(name)
-	if err != nil {
-		return err
-	}
-	*ll = l
-	return nil
-}
-
-// Implements the Unmarshaler interface of the yaml pkg.
-func (b *Backend) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var name string
-	if err := unmarshal(&name); err != nil {
-		return err
-	}
-
-	be, err := parseBackend(name)
-	if err != nil {
-		return err
-	}
-	*b = be
-
-	return nil
 }
 
 func (c *config) Load(paths ...string) error {
