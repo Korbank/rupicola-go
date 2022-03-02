@@ -7,6 +7,19 @@ import (
 	"time"
 )
 
+func (m *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var name string
+	if err := unmarshal(name); err != nil {
+		return err
+	}
+	me, err := parseEncoding(name)
+	if err != nil {
+		return err
+	}
+	*m = me
+	return nil
+}
+
 func (m *RawMethodDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	// Use alias, so we dont hit stack overflow invoking self over and over
 	type yamlFix RawMethodDef

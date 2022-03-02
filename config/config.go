@@ -227,31 +227,19 @@ func (v *value) Int32(def int32) int32 {
 	return int32(big)
 }
 
-// // Config uration
-// type Config interface {
-// 	// Get(key ...string) Value
-// 	Load(path ...string) error
-// }
 type Config = config
-type config struct {
-	//root value
-	rawConfig
-	def value
-}
 
 // NewConfig returns empty configuration
 func NewConfig() Config {
 	return config{
-		rawConfig: rawConfig{
-			Limits: DefaultLimits(),
-			Protocol: Protocol{
-				URI: struct {
-					Streamed string
-					RPC      string
-				}{
-					Streamed: "/streaming",
-					RPC:      "/jsonrpc",
-				},
+		Limits: DefaultLimits(),
+		Protocol: Protocol{
+			URI: struct {
+				Streamed string
+				RPC      string
+			}{
+				Streamed: "/streaming",
+				RPC:      "/jsonrpc",
 			},
 		},
 	}
@@ -498,8 +486,8 @@ type Protocol struct {
 type Limits struct {
 	ReadTimeout time.Duration `yaml:"read-timeout"`
 	ExecTimeout time.Duration `yaml:"exec-timeout"`
-	PayloadSize int64        `yaml:"payload-size"`
-	MaxResponse int64        `yaml:"max-response"`
+	PayloadSize int64         `yaml:"payload-size"`
+	MaxResponse int64         `yaml:"max-response"`
 }
 
 func DefaultLimits() Limits {
@@ -537,11 +525,12 @@ type InvokeInfoDef struct {
 
 // MethodDef ...
 type RawMethodDef struct {
-	Streamed   bool
-	Private    bool
-	Encoding   MethodEncoding
-	Params     map[string]MethodParam
-	InvokeInfo InvokeInfoDef `yaml:"invoke"`
+	Streamed      bool
+	Private       bool
+	IncludeStderr bool `yaml:"include-stderr"`
+	Encoding      MethodEncoding
+	Params        map[string]MethodParam
+	InvokeInfo    InvokeInfoDef `yaml:"invoke"`
 	// Pointer because we need to know when its unsed
 	Limits MethodLimits
 	logger log.Logger
@@ -603,7 +592,7 @@ func (m RawMethodDef) Validate() error {
 	return nil
 }
 
-type rawConfig struct {
+type config struct {
 	Include  []rawInclude
 	Log      LogDef
 	Protocol Protocol
@@ -672,7 +661,7 @@ func (c *config) Load(paths ...string) error {
 		if e != nil {
 			return e
 		}
-		var specialOne rawConfig
+		var specialOne config
 		if err := yaml.UnmarshalStrict(bytes, &specialOne); err != nil {
 			return err
 		}
@@ -696,7 +685,7 @@ func (c *config) Load(paths ...string) error {
 				b.Mode = FileMode(0666)
 			}
 		}
-		mergeConfig(&c.rawConfig, specialOne)
+		mergeConfig(c, specialOne)
 	}
 	// ensure empty method limits are now filled with proper values
 	// for k, v := range c.Methods {
@@ -736,7 +725,7 @@ func mergeLog(a *LogDef, b LogDef) {
 	}
 }
 
-func mergeConfig(a *rawConfig, b rawConfig) {
+func mergeConfig(a *config, b config) {
 	a.Include = append(a.Include, b.Include...)
 	mergeLog(&a.Log, b.Log)
 	if a.Methods == nil {
