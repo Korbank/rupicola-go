@@ -46,7 +46,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 			if arg.DefaultVal == nil {
 				continue
 			}
-			val = arg.DefaultVal.Raw()
+			val = arg.DefaultVal
 			if val == nil {
 				val = arg.Type.DefaultValue()
 			}
@@ -59,7 +59,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 		switch arg.Type {
 		case config.String:
 			_, ok = val.(string)
-		case config.Int:
+		case config.Int, config.Number:
 			// any numerical is ok
 			switch providedKind {
 			case reflect.Float32:
@@ -150,21 +150,22 @@ func evalueateArgs(m config.MethodArgs, arguments map[string]interface{}, output
 
 	if m.Param == "self" {
 		has = true
-		if arguments == nil {
-			value = ""
-		} else {
-			bytes, ok := json.Marshal(arguments)
-			if ok == nil {
-				value = string(bytes)
-			} else {
+		value = ""
+		if arguments != nil {
+			var bytes []byte
+			var err error
+			if bytes, err = json.Marshal(arguments); err != nil {
 				return false, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "self")
 			}
+			value = string(bytes)
 		}
 	}
 	if has || m.Compound {
 		// We should skip expanding for markers only
 		if !m.Skip {
-			output.WriteString(value)
+			if _, err := output.WriteString(value); err != nil {
+				return false, err
+			}
 		}
 		var skipCompound bool
 		for _, arg := range m.Child {
@@ -198,6 +199,7 @@ func (conf Config) SetLogging() {
 		logLevel = log.DebugLevel
 	case config.LLOff:
 		logLevel = log.Disabled
+	case config.LLUndefined:
 	default:
 		panic("unknown log level")
 	}
@@ -206,7 +208,7 @@ func (conf Config) SetLogging() {
 	newLogger := Logger.Level(logLevel)
 
 	switch conf.Log.Backend {
-	case config.BackendKeep:
+	case config.BackendKeep, config.BackendUndefined:
 		// NoOp
 		break
 	case config.BackendStderr:

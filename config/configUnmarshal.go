@@ -1,11 +1,41 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+func (e *ExecType) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var name string
+	if err := unmarshal(&name); err != nil {
+		return err
+	}
+	et, err := parseExecType(name)
+	if err != nil {
+		return err
+	}
+	*e = et
+	return nil
+}
+
+func (e *Exec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	if err := unmarshal(&e.Path); err == nil {
+		e.Mode = ExecTypeDefault
+		// Done, this is default exec
+		return nil
+	}
+	type yamlFix Exec
+	e.Path = "sh"
+	x := yamlFix(*e)
+	if err := unmarshal(&x); err != nil {
+		return err
+	}
+	*e = Exec(x)
+	return nil
+}
 
 func (m *MethodEncoding) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var name string
@@ -69,61 +99,102 @@ func (fm *FileMode) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-func (mv *MapOfValue) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var tmp map[string]*value
-	if err := unmarshal(&tmp); err != nil {
-		return err
+func fromInterParams(ip interParams) (MethodArgs, error) {
+	switch ip.Type {
+	case Scalar:
+		return MethodArgs{
+			Static: true,
+			Param:  ip.Scalar,
+		}, nil
+	case Map:
+		return MethodArgs{
+			Param: ip.Map.Param,
+			Skip:  ip.Map.Skip,
+		}, nil
+	case Array:
+		ma := MethodArgs{
+			Compound: true,
+			Child:    make([]MethodArgs, len(ip.Array)),
+		}
+		var err error
+		for i := range ip.Array {
+			if ma.Child[i], err = fromInterParams(ip.Array[i]); err != nil {
+				return ma, nil
+			}
+		}
+		return ma, nil
 	}
-	mav := make(MapOfValue)
-	for k, v := range tmp {
-		mav[k] = v
-	}
-	*mv = mav
-	return nil
+	panic("should not happen")
 }
-func (lv *ListOfValue) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var tmp []*value
-	if err := unmarshal(&tmp); err != nil {
+
+type intermediateParamsType int
+
+const (
+	BORKED intermediateParamsType = iota
+	Scalar
+	Map
+	Array
+)
+
+func (i intermediateParamsType) String() string {
+	switch i {
+	case BORKED:
+		return "- error -"
+	case Scalar:
+		return "Scalar"
+	case Map:
+		return "Map"
+	case Array:
+		return "Array"
+	}
+	panic("not reachable")
+}
+
+type interParams struct {
+	Scalar string
+	Map    struct {
+		Param string
+		Skip  bool
+	}
+	Array []interParams
+	Type  intermediateParamsType
+}
+
+func (i *interParams) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	if err := unmarshal(&i.Scalar); err == nil {
+		i.Type = Scalar
+		return nil
+	}
+	if err := unmarshal(&i.Map); err == nil {
+		i.Type = Map
+		return nil
+	}
+	if err := unmarshal(&i.Array); err != nil {
 		return err
 	}
-	lav := make(ListOfValue, len(tmp))
-	for i := range tmp {
-		lav[i] = tmp[i]
+	// not sure if this is only exception
+	if len(i.Array) == 1 && i.Array[0].Type == BORKED {
+		i.Type = Scalar
+		i.Array = nil
+		i.Scalar = "-"
+		return nil
 	}
-	*lv = lav
+	i.Type = Array
 	return nil
 }
 
 func (ma *MethodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var v value
-	if err := unmarshal(&v); err != nil {
+	var ip interParams
+	if err := unmarshal(&ip); err != nil {
 		return err
 	}
-	a, err := fromVal(&v)
+	fmt.Printf("%v\n", ip)
+	args, err := fromInterParams(ip)
 	if err != nil {
 		return err
 	}
-	*ma = a
+	*ma = args
 	return nil
-}
-func (v *value) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var param struct {
-		Param string
-		Skip  bool
-	}
-	if err := unmarshal(&param); err == nil {
-		v.Mapa = make(MapOfValue)
-		v.Mapa["param"] = &value{Other: param.Param}
-		v.Mapa["skip"] = &value{Other: param.Skip}
-		return nil
-	}
-	if err := unmarshal(&v.Lista); err == nil {
-		return nil
-	}
-	if err := unmarshal(&v.Mapa); err == nil {
-		return nil
-	}
-	return unmarshal(&v.Other)
 }
 func (mpt *MethodParamType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var name string

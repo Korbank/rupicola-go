@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,217 +14,6 @@ import (
 
 	"gopkg.in/yaml.v2"
 )
-
-var (
-	emptyValue = value{}
-)
-
-// Value represents any underlying value
-type Value interface {
-	Int64(def int64) int64
-	Map() map[string]Value
-	Array(def []interface{}) []Value
-	AsString(def string) string
-	Bool(def bool) bool
-	Get(key ...string) Value
-	IsValid() bool
-	IsArray() bool
-	IsMap() bool
-	Raw() interface{}
-}
-
-type MapOfValue map[string]Value
-type ListOfValue []Value
-
-type value struct {
-	Mapa  MapOfValue
-	Lista ListOfValue
-	Other interface{}
-}
-
-func (v *value) String() string {
-	if !v.IsValid() {
-		return "invalid"
-	}
-	if v.IsArray() {
-		return "array"
-	}
-	if v.IsMap() {
-		b := &strings.Builder{}
-		b.WriteString("{")
-
-		for k, v := range v.Mapa {
-			b.WriteString(k + ":" + fmt.Sprintf("%v", v))
-		}
-
-		b.WriteString("}")
-		return b.String()
-	}
-	return fmt.Sprintf("%v", v.Other)
-}
-
-func (v *value) IsArray() bool {
-	return v.Lista != nil
-}
-
-func (v *value) IsMap() bool {
-	return v.Mapa != nil
-}
-
-func (v *value) Raw() interface{} {
-	return v.Other
-}
-
-func (v *value) Uint32(def uint32) uint32 {
-	return uint32(v.Int64(int64(def)))
-}
-
-func (v *value) IsValid() bool {
-	return v.Mapa != nil || v.Lista != nil || v.Other != nil
-}
-
-func (v *value) Duration(def time.Duration) time.Duration {
-	return time.Duration(v.Int64(int64(def)))
-}
-func (v *value) AsString(def string) string {
-	if v.Other == nil {
-		return def
-	}
-	str, ok := v.Other.(string)
-	if ok {
-		return str
-	}
-	return def
-}
-
-func (v *value) Bool(def bool) bool {
-	if v.Other == nil {
-		return def
-	}
-	str, ok := v.Other.(bool)
-	if ok {
-		return str
-	}
-	return def
-}
-
-func (v *value) Map() map[string]Value {
-	return v.Mapa
-}
-
-func arrayFrom(def []interface{}) []Value {
-	var result []Value
-	for _, x := range def {
-		val := valFrom(x)
-		result = append(result, val)
-	}
-	return result
-}
-
-func (v *value) Array(def []interface{}) []Value {
-	// Yeeees we cast, loop and do other bad things
-	// but who cares
-	if v.Lista != nil {
-		return v.Lista
-	}
-	return arrayFrom(def)
-}
-
-func mapFrom2(this map[string]interface{}) map[string]Value {
-	mapa := make(map[string]Value)
-	for k, v := range this {
-		mapa[k] = valFrom(v)
-	}
-	return mapa
-}
-func mapFrom(this map[interface{}]interface{}) map[string]Value {
-	mapa := make(map[string]Value)
-	for k, v := range this {
-		var key string
-		switch cast := k.(type) {
-		case string:
-			key = cast
-			break
-		default:
-			key = fmt.Sprint(k)
-		}
-		mapa[key] = valFrom(v)
-	}
-	return mapa
-}
-
-// ValFrom wrapes provided value inside Value
-func ValFrom(this interface{}) Value {
-	return valFrom(this)
-}
-
-func valFrom(this interface{}) Value {
-	var val = new(value)
-	switch cast := this.(type) {
-	case Value:
-		return cast
-	case []Value:
-		val.Lista = cast
-	case map[string]Value:
-		val.Mapa = cast
-	case map[string]interface{}:
-		val.Mapa = mapFrom2(cast)
-	case map[interface{}]interface{}:
-		val.Mapa = mapFrom(cast)
-	case []interface{}:
-		val.Lista = arrayFrom(cast)
-	default:
-		val.Other = this
-	}
-	return val
-}
-func (v *value) get(key string) Value {
-	if v.Mapa == nil {
-		return &emptyValue
-	}
-	val, has := v.Mapa[key]
-	if !has {
-		return &emptyValue
-	}
-	return val
-}
-func (v *value) Get(keys ...string) Value {
-	current := Value(v)
-	for _, key := range keys {
-		current = current.(*value).get(key)
-	}
-	return current
-}
-
-func (v *value) Int64(def int64) int64 {
-	if v.Other == nil {
-		return def
-	}
-	switch cast := v.Other.(type) {
-	case int:
-		return int64(cast)
-	case int32:
-		return int64(cast)
-	case int64:
-		return cast
-	default:
-		return def
-	}
-}
-
-func (v *value) Int32(def int32) int32 {
-	// decode using bigger format
-	big := v.Int64(int64(def))
-	if big == int64(def) {
-		return def
-	}
-	// got some value, but can we cast it?
-
-	if big > math.MaxInt32 {
-		return def
-	}
-	return int32(big)
-}
 
 type Config = config
 
@@ -337,7 +125,7 @@ func parseBackend(backend string) (Backend, error) {
 	case "":
 		return BackendStderr, nil
 	default:
-		return BackendStdout, fmt.Errorf("Unknown backend %s", backend)
+		return BackendStdout, fmt.Errorf("unknown backend %s", backend)
 	}
 }
 func parseLoglevel(level string) (LogLevel, error) {
@@ -389,7 +177,7 @@ func (mpt MethodParamType) String() string {
 	switch mpt {
 	case String:
 		return "string"
-	case Int:
+	case Int, Number:
 		return "int"
 	case Bool:
 		return "bool"
@@ -435,7 +223,7 @@ func parseBindType(bindType string) (BindType, error) {
 	case "unix":
 		return Unix, nil
 	default:
-		return HTTP, fmt.Errorf("Unknown bind type %v", bindType)
+		return HTTP, fmt.Errorf("unknown bind type %v", bindType)
 	}
 }
 
@@ -448,7 +236,7 @@ func parseMethodParamType(value string) (MethodParamType, error) {
 	case "bool", "boolean":
 		return Bool, nil
 	default:
-		return String, errors.New("Unknown type")
+		return String, errors.New("unknown type")
 	}
 }
 
@@ -460,14 +248,14 @@ type Bind struct {
 	Address      string
 	Port         uint16
 	AllowPrivate bool `yaml:"allow_private"`
-	// Only for HTTPS
-	Cert string
-	// Only for HTTPS
-	Key string
 	// Only for Unix [default=660]
 	Mode FileMode
 	UID  int
 	GID  int
+	// Only for HTTPS
+	Cert string
+	// Only for HTTPS
+	Key string
 }
 
 // Protocol - define bind points, auth and URI paths
@@ -510,7 +298,7 @@ type rawInclude struct {
 type MethodParam struct {
 	Type       MethodParamType
 	Optional   bool
-	DefaultVal *value `yaml:"default"`
+	DefaultVal interface{} `yaml:"default"`
 }
 
 // RunAs ...
@@ -518,8 +306,37 @@ type RunAs struct {
 	UID int
 	GID int
 }
+
+type ExecType int
+
+const (
+	ExecTypeDefault      ExecType = iota
+	ExecTypeShellWrapper          = iota
+)
+
+func parseExecType(val string) (ExecType, error) {
+	switch strings.ToLower(val) {
+	case "", "default":
+		return ExecTypeDefault, nil
+	case "shell_wrapper":
+		return ExecTypeShellWrapper, nil
+	}
+	return 0, fmt.Errorf("invalid exec type: %s", val)
+}
+
+type Exec struct {
+	Mode ExecType `yaml:"type"`
+	Path string
+}
+
+func (e Exec) String() string {
+	return fmt.Sprintf("Exec{Mode:%v Path:%s}", e.Mode, e.Path)
+}
+
+var _ fmt.Stringer = (*Exec)(nil)
+
 type InvokeInfoDef struct {
-	Exec  string
+	Exec  Exec
 	Delay time.Duration
 	Args  []MethodArgs
 	RunAs RunAs `yaml:"run-as"`
@@ -623,34 +440,6 @@ func listUsedVariables(nodesName []string) []string {
 	return names
 }
 
-func fromVal(value Value) (MethodArgs, error) {
-	var out MethodArgs
-
-	var err error
-	if value.IsMap() {
-		x := value.Get("template").AsString("")
-		if x != "" {
-			return MethodArgs{}, errors.New("template not supported yet")
-		} else {
-			out.Param = value.Get("param").AsString("")
-			out.Skip = value.Get("skip").Bool(false)
-			out.Static = false
-		}
-	} else if value.IsArray() {
-		asArray := value.Array(nil)
-		out.Child = make([]MethodArgs, len(asArray))
-		for i, m := range asArray {
-			out.Child[i], err = fromVal(m)
-		}
-		out.Compound = true
-	} else {
-		out.Param = fmt.Sprint(value.Raw())
-		out.Static = true
-		out.Skip = false
-	}
-	return out, err
-}
-
 func (c *config) Load(paths ...string) error {
 	pathToVisit := new(stack)
 	for _, path := range paths {
@@ -659,12 +448,14 @@ func (c *config) Load(paths ...string) error {
 	for pathToVisit.len() != 0 {
 		path := pathToVisit.pop()
 		// log.Logger. .Println("loading", path)
-		bytes, e := ioutil.ReadFile(path)
+		bytes, e := os.Open(path)
 		if e != nil {
 			return e
 		}
 		var specialOne config
-		if err := yaml.UnmarshalStrict(bytes, &specialOne); err != nil {
+		decoder := yaml.NewDecoder(bytes)
+		decoder.SetStrict(true)
+		if err := decoder.Decode(&specialOne); err != nil {
 			return err
 		}
 		// do we have any includes

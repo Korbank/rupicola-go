@@ -13,6 +13,19 @@ import (
 	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
+func (m *MethodDef) execParamsLen() int {
+	switch m.InvokeInfo.Exec.Mode {
+	case config.ExecTypeDefault:
+		return len(m.InvokeInfo.Args)
+	// case config.ExecTypeShellWrapper:
+	// 	// Additional parameters:
+	// 	// '-c' and $method_name
+	// 	return len(m.InvokeInfo.Args) + len(m.Params) + 2
+	// default:
+	}
+	panic("unknown mode")
+}
+
 func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
 	uncastedContext := req.UserData()
 	var ok bool
@@ -41,7 +54,8 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	}
 
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
+	appArguments := make([]string, 0, m.execParamsLen())
+
 	for _, arg := range m.InvokeInfo.Args {
 		skip, err := evalueateArgs(arg, params, buffer)
 		if err != nil {
@@ -54,8 +68,38 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		buffer.Reset()
 	}
 
-	m.logger.Debug().Str("exec", m.InvokeInfo.Exec).Strs("args", appArguments).Msg("prepared method invocation")
-	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
+	var process *exec.Cmd
+	switch m.InvokeInfo.Exec.Mode {
+	case config.ExecTypeDefault:
+	case config.ExecTypeShellWrapper:
+		newArguments := make([]string, 0, len(m.Params)+2+len(appArguments))
+		newArguments = append(newArguments, "-c")
+		if len(appArguments) > 0 {
+			appArguments = append(newArguments, appArguments[0])
+		}
+		appArguments = append(appArguments, req.Method())
+		buffer.Reset()
+		for name := range m.Params {
+			arg := config.MethodArgs{
+				Param: name,
+			}
+			skip, err := evalueateArgs(arg, params, buffer)
+			if err != nil {
+				m.logger.Error().Err(err).Msg("error")
+				return nil, nil, err
+			}
+			if !skip {
+				appArguments = append(appArguments, buffer.String())
+			}
+			buffer.Reset()
+		}
+
+	default:
+		panic("should not happend")
+	}
+	m.logger.Debug().Stringer("exec", m.InvokeInfo.Exec).
+		Strs("args", appArguments).Msg("prepared method invocation")
+	process = exec.CommandContext(ctx, m.InvokeInfo.Exec.Path, appArguments...)
 
 	// Make it "better"
 	SetUserGroup(process, m)
