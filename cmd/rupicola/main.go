@@ -16,7 +16,7 @@ var logger = log.New(os.Stderr).Level(log.TraceLevel).With().Timestamp().Logger(
 
 func registerCleanupAtExit(config *rupicola.Config) {
 	sigc := make(chan os.Signal, 10)
-	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func(c chan os.Signal) {
 		// todo: configuration reloading
 		// Wait for a SIGINT or SIGKILL:

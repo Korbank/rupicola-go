@@ -148,7 +148,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 			}
 		}
 		var lastN int
-		lastN, err = b.buffer.Write(p[chunk:len(p)])
+		lastN, err = b.buffer.Write(p[chunk:])
 		if err != nil {
 			return
 		}

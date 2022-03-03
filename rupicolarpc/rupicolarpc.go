@@ -53,6 +53,8 @@ func (me MethodType) String() string {
 		return "Streaming"
 	case StreamingMethodLegacy:
 		return "Streaming (legacy)"
+	case unknownMethod:
+		fallthrough
 	default:
 		return fmt.Sprintf("unknown(%d)", me)
 	}
@@ -541,7 +543,7 @@ func (f *jsonRPCrequestPriv) process() error {
 		return f.err
 	}
 
-	f.rpcResponserPriv.MaxResponse(int64(m.MaxResponse))
+	f.MaxResponse(int64(m.MaxResponse))
 
 	timeout := f.p.limit(metype).ExecTimeout
 	if timeout != 0 {
@@ -631,7 +633,7 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 				case <-t.C:
 					f.log.Warn().Msg("forced flush after timeout")
 					// Force flush
-					f.rpcResponserPriv.Flush()
+					f.Flush()
 				}
 			}()
 		}

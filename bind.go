@@ -71,6 +71,10 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits config.Limits) error {
 			return err
 		}
 		return srv.Serve(ln)
+	case config.BindTypeUnknown:
+		fallthrough
+	default:
+		return errors.New("unsupported bind type")
+		// return errors.New("unknown bind type")
 	}
-	return errors.New("unsupported bind type")
 }

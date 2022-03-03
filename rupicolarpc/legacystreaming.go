@@ -27,7 +27,9 @@ func (b *legacyStreamingResponse) SetResponseResult(result interface{}) (err err
 		Logger.Error().Str("result", fmt.Sprintf("%v", result)).Msg("Unknown input result")
 	}
 	if err != nil {
-		b.SetResponseError(err)
+		// NOTE(m): Ignore error, at this point it's meaningless
+		ignoredError := b.SetResponseError(err)
+		Logger.Error().Err(ignoredError).Send()
 	}
 	return
 }

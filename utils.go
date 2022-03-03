@@ -4,7 +4,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
@@ -114,12 +113,11 @@ type flusher interface {
 
 type flushWrapper struct {
 	flusher
-	flush sync.Once
 }
 
 func (f *flushWrapper) Write(p []byte) (n int, err error) {
 	n, err = f.flusher.Write(p)
-	f.flusher.Flush()
+	f.Flush()
 	return
 }
 
