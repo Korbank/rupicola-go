@@ -103,7 +103,7 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 }
 
 func (conf Config) isValidAuth(login string, password string) bool {
-	if conf.Protocol.AuthBasic.Login != "" {
+	if conf.Protocol.AuthBasic != nil && conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
 		passOk, _ := pwhash.Verify(password, conf.Protocol.AuthBasic.Password)
 		loginOk := subtle.ConstantTimeCompare([]byte(login), []byte(conf.Protocol.AuthBasic.Login)) == 1
