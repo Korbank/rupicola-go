@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -188,7 +187,6 @@ func (ma *MethodArgs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if err := unmarshal(&ip); err != nil {
 		return err
 	}
-	fmt.Printf("%v\n", ip)
 	args, err := fromInterParams(ip)
 	if err != nil {
 		return err
