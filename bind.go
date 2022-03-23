@@ -12,6 +12,59 @@ import (
 
 type Bind config.Bind
 
+func (bind *Bind) bindHTTP(srv *http.Server) error {
+	Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
+	ln, err := ListenKeepAlive("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
+	return srv.Serve(ln)
+}
+
+func (bind *Bind) bindHTTPS(srv *http.Server) error {
+	Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
+	srv.TLSConfig = &tls.Config{
+		MinVersion:               tls.VersionTLS12,
+		PreferServerCipherSuites: true,
+	}
+	ln, err := ListenKeepAlive("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
+	return srv.ServeTLS(ln, bind.Cert, bind.Key)
+}
+
+func (bind *Bind) bindUnix(srv *http.Server) error {
+	//todo: check
+	Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
+	srv.Addr = bind.Address
+	// Change umask to ensure socker is created with right
+	// permissions (at this point no other IO opeations are running)
+	// and then restore previous umask
+	oldmask := myUmask(int(bind.Mode) ^ 0777)
+	ln, err := ListenUnixLock(bind.Address)
+	myUmask(oldmask)
+
+	if err != nil {
+		return err
+	}
+
+	defer ln.Close()
+	uid := os.Getuid()
+	gid := os.Getgid()
+	if bind.UID >= 0 {
+		uid = bind.UID
+	}
+	if bind.GID >= 0 {
+		gid = bind.GID
+	}
+	if err := os.Chown(bind.Address, uid, gid); err != nil {
+		Logger.Error().Str("address", bind.Address).Int("uid", uid).Int("gid", gid).Msg("Setting permission failed")
+		return err
+	}
+	return srv.Serve(ln)
+}
+
 // Bind to interface and Start listening using provided mux and limits
 func (bind *Bind) Bind(mux *http.ServeMux, limits config.Limits) error {
 	srv := &http.Server{
@@ -23,54 +76,13 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits config.Limits) error {
 
 	switch bind.Type {
 	case config.HTTP:
-		Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.Serve(ln)
+		return bind.bindHTTP(srv)
 
 	case config.HTTPS:
-		srv.TLSConfig = &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			PreferServerCipherSuites: true,
-		}
-		Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.ServeTLS(ln, bind.Cert, bind.Key)
+		return bind.bindHTTPS(srv)
 
 	case config.Unix:
-		//todo: check
-		Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
-		srv.Addr = bind.Address
-		// Change umask to ensure socker is created with right
-		// permissions (at this point no other IO opeations are running)
-		// and then restore previous umask
-		oldmask := myUmask(int(bind.Mode) ^ 0777)
-		ln, err := ListenUnixLock(bind.Address)
-		myUmask(oldmask)
-
-		if err != nil {
-			return err
-		}
-
-		defer ln.Close()
-		uid := os.Getuid()
-		gid := os.Getgid()
-		if bind.UID >= 0 {
-			uid = bind.UID
-		}
-		if bind.GID >= 0 {
-			gid = bind.GID
-		}
-		if err := os.Chown(bind.Address, uid, gid); err != nil {
-			Logger.Error().Str("address", bind.Address).Int("uid", uid).Int("gid", gid).Msg("Setting permission failed")
-			return err
-		}
-		return srv.Serve(ln)
+		return bind.bindUnix(srv)
 	case config.BindTypeUnknown:
 		fallthrough
 	default:
