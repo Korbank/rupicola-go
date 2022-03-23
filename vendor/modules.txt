@@ -9,6 +9,6 @@ github.com/mkocot/pwhash
 github.com/rs/zerolog
 github.com/rs/zerolog/internal/cbor
 github.com/rs/zerolog/internal/json
-# gopkg.in/yaml.v2 v2.3.0
+# gopkg.in/yaml.v2 v2.4.0
 ## explicit
 gopkg.in/yaml.v2
