@@ -470,7 +470,6 @@ func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 
 type jsonRPCrequestPriv struct {
 	requestData
-	ctx context.Context
 	rpcResponserPriv
 	err error
 	req RequestDefinition
@@ -522,7 +521,7 @@ func (f *jsonRPCrequestPriv) Close() error {
 	return f.rpcResponserPriv.Close()
 }
 
-func (f *jsonRPCrequestPriv) process() error {
+func (f *jsonRPCrequestPriv) process(ctx context.Context) error {
 	// Prevent processing if we got errors on transport level
 	if f.err != nil {
 		return f.err
@@ -561,21 +560,21 @@ func (f *jsonRPCrequestPriv) process() error {
 	}
 	if timeout > 0 {
 		f.log.Debug().Dur("timeout", timeout).Msg("Seting time limit for method")
-		kontext, cancel := context.WithTimeout(f.ctx, timeout)
+		kontext, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		f.ctx = kontext
+		ctx = kontext
 	}
 
 	go func() {
 		defer close(f.done)
-		m.Invoke(f.ctx, f, f)
+		m.Invoke(ctx, f, f)
 	}()
 	// 1) Timeout or we done
 	select {
-	case <-f.ctx.Done():
+	case <-ctx.Done():
 		// oooor transport error?
 		f.log.Info().Msg("timed out")
-		f.log.Info().Err(f.ctx.Err()).Msg("context error")
+		f.log.Info().Err(ctx.Err()).Msg("context error")
 		// this could be canceled too... but
 		// why it should be like that? if we get
 		// cancel from transport then whatever no one is
@@ -597,8 +596,9 @@ func (f *jsonRPCrequestPriv) process() error {
 }
 
 // SetResponseError saves passed error
+// should have context
 func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
-	if f.ctx.Err() != nil {
+	if f.err != nil {
 		f.log.Warn().Err(errs).Msg("trying to set error after deadline")
 	} else {
 		// should we keep original error or overwrite it with response?
@@ -611,8 +611,9 @@ func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 }
 
 // SetResponseResult handle Reader case
+// should have context
 func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
-	if f.ctx.Err() != nil {
+	if f.err != nil {
 		f.log.Warn().Msg("trying to set result after deadline")
 		return f.err
 	}
@@ -628,7 +629,6 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 				defer t.Stop()
 
 				select {
-				case <-f.ctx.Done(): // Meh, connection failed
 				case <-f.done: // Meh, we failed
 				case <-t.C:
 					f.log.Warn().Msg("forced flush after timeout")
@@ -649,9 +649,8 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	return f.err
 }
 
-func (p *jsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequestPriv {
+func (p *jsonRpcProcessor) spawnRequest(request RequestDefinition, response io.Writer) jsonRPCrequestPriv {
 	jsonRequest := jsonRPCrequestPriv{
-		ctx:              context,
 		req:              request,
 		rpcResponserPriv: newResponser(response, request.OutputMode()),
 		done:             make(chan struct{}),
@@ -695,13 +694,13 @@ func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request Reque
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
 	// We should just check if any write success
 	// NEW: Check behavior after using connection context
-	jsonRequest := p.spawnRequest(kontext, request, response)
+	jsonRequest := p.spawnRequest(request, response)
 
 	if err := jsonRequest.readFromTransport(); err != nil {
 		Logger.Debug().Err(err).Msg("transport error")
 	}
 
-	if err := jsonRequest.process(); err != nil {
+	if err := jsonRequest.process(kontext); err != nil {
 		Logger.Debug().Err(err).Msg("process")
 	}
 

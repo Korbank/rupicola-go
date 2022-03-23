@@ -99,7 +99,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 				lineWithoutEnding := v[:len(v)-1]
 				// special case with dangling data in buffer
 				if b.buffer.Len() != 0 {
-					npart, err = b.buffer.Write(lineWithoutEnding)
+					_, err = b.buffer.Write(lineWithoutEnding)
 					if err != nil {
 						return
 					}
