@@ -11,13 +11,16 @@ import (
 	"time"
 
 	log "github.com/rs/zerolog"
-
 	"gopkg.in/yaml.v2"
 )
 
 type Config = config
 
-// NewConfig returns empty configuration
+var (
+	ErrInvalidDefinition = errors.New("invalid method definition")
+)
+
+// NewConfig returns empty configuration.
 func NewConfig() Config {
 	return config{
 		Limits: DefaultLimits(),
@@ -39,7 +42,7 @@ func searchFiles(path string, required bool) (out []string, err error) {
 		if required {
 			return nil, err
 		}
-		//log.Warn("Optional config not found", "path", info.Name)
+		// log.Warn("Optional config not found", "path", info.Name)
 		return nil, nil
 	}
 
@@ -53,11 +56,11 @@ func searchFiles(path string, required bool) (out []string, err error) {
 					out = append(out, filepath.Join(path, finfo.Name()))
 				}
 			}
-
 		}
 	} else {
 		out = []string{path}
 	}
+
 	return
 }
 
@@ -314,6 +317,8 @@ const (
 	ExecTypeShellWrapper          = iota
 )
 
+var logger = log.Nop()
+
 func parseExecType(val string) (ExecType, error) {
 	switch strings.ToLower(val) {
 	case "", "default":
@@ -344,7 +349,8 @@ type InvokeInfoDef struct {
 
 // MethodDef ...
 type RawMethodDef struct {
-	Streamed      bool
+	AllowStreamed bool `yaml:"streamed"`
+	AllowRPC      bool `yaml:"rpc"`
 	Private       bool
 	IncludeStderr bool `yaml:"include-stderr"`
 	Encoding      MethodEncoding
@@ -352,7 +358,6 @@ type RawMethodDef struct {
 	InvokeInfo    InvokeInfoDef `yaml:"invoke"`
 	// Pointer because we need to know when its unsed
 	Limits MethodLimits
-	logger log.Logger
 	// unused parameter
 	Output interface{}
 }
@@ -382,14 +387,20 @@ func aggregateArgs(a MethodArgs, b map[string]bool) {
 
 // Validate ensure correct method definition
 func (m RawMethodDef) Validate() error {
+	if !m.AllowRPC && !m.AllowStreamed {
+		return fmt.Errorf("%w: method has disabled streamed and RPC response", ErrInvalidDefinition)
+	}
+
 	definedParams := make(map[string]bool)
 	definedArgs := make(map[string]bool)
+
 	for _, v := range m.InvokeInfo.Args {
 		aggregateArgs(v, definedArgs)
 	}
 
 	for k := range m.Params {
-		m.logger.Trace().Str("param", k).Send()
+		logger.Trace().Str("param", k).Send()
+
 		definedParams[k] = true
 	}
 
@@ -398,16 +409,16 @@ func (m RawMethodDef) Validate() error {
 			definedParams[k] = false
 		} else {
 			// Fatal, or just return error?
-			m.logger.Error().Str("name", k).Msg("undeclared param")
-			return fmt.Errorf("undeclared param '%v' in arguments", k)
+			return fmt.Errorf("%w: undeclared param '%v' in arguments", ErrInvalidDefinition, k)
 		}
 	}
 
 	for k, v := range definedParams {
 		if v {
-			m.logger.Warn().Str("name", k).Msg("unused parameter defined")
+			logger.Warn().Str("name", k).Msg("unused parameter defined")
 		}
 	}
+
 	return nil
 }
 
@@ -447,7 +458,7 @@ func (c *config) Load(paths ...string) error {
 	}
 	for pathToVisit.len() != 0 {
 		path := pathToVisit.pop()
-		// log.Logger. .Println("loading", path)
+		logger.Trace().Str("loading", path).Send()
 		bytes, e := os.Open(path)
 		if e != nil {
 			return e
@@ -493,7 +504,7 @@ func (c *config) Load(paths ...string) error {
 	// }
 	for i := range c.Methods {
 		if err := c.Methods[i].Validate(); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", i, err)
 		}
 	}
 	return nil

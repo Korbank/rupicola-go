@@ -60,6 +60,7 @@ func (m *RawMethodDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		UID: os.Getuid(),
 		GID: os.Getgid(),
 	}
+	m.AllowRPC = true
 	v := yamlFix(*m)
 	if err := unmarshal(&v); err != nil {
 		return err

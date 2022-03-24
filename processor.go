@@ -20,20 +20,33 @@ func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
 		processor: rupicolarpc.NewJsonRpcProcessor()}
 
 	for k, v := range conf.Methods {
-		var metype rupicolarpc.MethodType
-		if v.Streamed {
-			metype = rupicolarpc.StreamingMethodLegacy
+		var metypes []rupicolarpc.MethodType
+		if v.AllowStreamed && v.AllowRPC {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.StreamingMethodLegacy,
+				rupicolarpc.RPCMethod,
+			}
+		} else if v.AllowStreamed {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.StreamingMethodLegacy,
+			}
+		} else if v.AllowRPC {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.RPCMethod,
+			}
 		} else {
-			metype = rupicolarpc.RPCMethod
+			panic("invalid configuration")
 		}
 
-		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+		for _, metype := range metypes {
+			method := rupicolaProcessor.processor.AddMethod(k, metype, v)
 
-		if v.Limits.ExecTimeout >= 0 {
-			method.ExecutionTimeout(v.Limits.ExecTimeout)
-		}
-		if v.Limits.MaxResponse >= 0 {
-			method.MaxSize(uint(v.Limits.MaxResponse))
+			if v.Limits.ExecTimeout >= 0 {
+				method.ExecutionTimeout(v.Limits.ExecTimeout)
+			}
+			if v.Limits.MaxResponse >= 0 {
+				method.MaxSize(uint(v.Limits.MaxResponse))
+			}
 		}
 	}
 	return rupicolaProcessor
