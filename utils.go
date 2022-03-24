@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	// The only "guard" agains mising FIN (happens on shitty networks)
+	// The only "guard" against mising FIN (happens on shitty networks)
 	// is setting deadline before each write so write call should
 	// end before running out of time (if you don't send petabytes of data
 	// in one call this is sufficient)
@@ -23,7 +23,9 @@ type writeWithGuard struct {
 }
 
 func (bb *writeWithGuard) Write(b []byte) (int, error) {
-	bb.SetWriteDeadline(time.Now().Add(globalTCPwriteTimeout))
+	if err := bb.SetWriteDeadline(time.Now().Add(globalTCPwriteTimeout)); err != nil {
+		return 0, err
+	}
 	return bb.Conn.Write(b)
 }
 
