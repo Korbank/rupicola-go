@@ -1,6 +1,8 @@
 package rupicola
 
 import (
+	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,9 +13,6 @@ import (
 	"github.com/mkocot/pwhash"
 
 	log "github.com/rs/zerolog"
-
-	"crypto/subtle"
-	"encoding/json"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
 )
@@ -188,6 +187,7 @@ func evalueateArgs(m config.MethodArgs, arguments map[string]interface{}, output
 // THIS IS NOT THREAD SAFE
 func (conf Config) SetLogging() {
 	var logLevel log.Level
+
 	switch conf.Log.LogLevel {
 	case config.LLError:
 		logLevel = log.ErrorLevel
