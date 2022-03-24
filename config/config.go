@@ -14,10 +14,11 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-type Config = config
+type config = Config
 
 var (
-	ErrInvalidDefinition = errors.New("invalid method definition")
+	ErrInvalidConfig     = errors.New("invalid config")
+	ErrInvalidDefinition = fmt.Errorf("%w: invalid method definition", ErrInvalidConfig)
 )
 
 // NewConfig returns empty configuration.
@@ -69,51 +70,51 @@ type BindType int
 
 const (
 	BindTypeUnknown BindType = iota
-	// HTTP - HTTP transport over TCP
+	// HTTP - HTTP transport over TCP.
 	HTTP
-	// HTTPS - HTTPS transport over TCP
+	// HTTPS - HTTPS transport over TCP.
 	HTTPS
-	// Unix - HTTP transport over unix socket
+	// Unix - HTTP transport over unix socket.
 	Unix
 )
 
-// LogLevel describe logging level
+// LogLevel describe logging level.
 type LogLevel int8
 
 const (
 	LLUndefined LogLevel = iota
-	// LLOff Disable log
+	// LLOff Disable log.
 	LLOff
-	// LLDebug most detailed log level (same as Trace)
+	// LLDebug most detailed log level (same as Trace).
 	LLDebug
-	// LLInfo only info and above
+	// LLInfo only info and above.
 	LLInfo
-	// LLWarn only warning or errors
+	// LLWarn only warning or errors.
 	LLWarn
-	// LLError only errors
+	// LLError only errors.
 	LLError
 )
 
-// LogDef holds logging definitions
+// LogDef holds logging definitions.
 type LogDef struct {
 	Backend
 	LogLevel `yaml:"level"`
 	Path     string
 }
 
-// Backend define log backend
+// Backend define log backend.
 type Backend int8
 
 const (
-	// BackendStdout write to stdout
+	// BackendStdout write to stdout.
 	BackendStdout Backend = 1 << iota
-	// BackendSyslog write to syslog
+	// BackendSyslog write to syslog.
 	BackendSyslog Backend = 1 << iota
-	// BackendStderr write to stderr (default)
+	// BackendStderr write to stderr (default).
 	BackendStderr Backend = 1 << iota
-	// BackendKeep keep current output
+	// BackendKeep keep current output.
 	BackendKeep Backend = 1 << iota
-	// BackendUndefined is used when no value is defined in config
+	// BackendUndefined is used when no value is defined in config.
 	BackendUndefined Backend = 0
 )
 
@@ -128,9 +129,10 @@ func parseBackend(backend string) (Backend, error) {
 	case "":
 		return BackendStderr, nil
 	default:
-		return BackendStdout, fmt.Errorf("unknown backend %s", backend)
+		return BackendStdout, fmt.Errorf("%w: unknown backend %s", ErrInvalidConfig, backend)
 	}
 }
+
 func parseLoglevel(level string) (LogLevel, error) {
 	switch strings.ToLower(level) {
 	case "off":
@@ -146,7 +148,7 @@ func parseLoglevel(level string) (LogLevel, error) {
 	case "error":
 		return LLError, nil
 	default:
-		return LLOff, fmt.Errorf("unknown log level: %s", level)
+		return LLOff, fmt.Errorf("%w: unknown log level: %s", ErrInvalidConfig, level)
 	}
 }
 
@@ -154,11 +156,11 @@ func parseLoglevel(level string) (LogLevel, error) {
 type MethodEncoding int
 
 const (
-	// Utf8 - Default message encoding
+	// Utf8 - Default message encoding.
 	Utf8 MethodEncoding = iota
-	// Base64 - Encode message as base64
+	// Base64 - Encode message as base64.
 	Base64
-	// Base85 - Encode message as base85
+	// Base85 - Encode message as base85.
 	Base85
 )
 
@@ -166,13 +168,13 @@ const (
 type MethodParamType int
 
 const (
-	// String - Method parameter should be string
+	// String - Method parameter should be string.
 	String MethodParamType = iota
-	// Int - Method parameter should be int (not float)
+	// Int - Method parameter should be int (not float).
 	Int
-	// Bool - Method parameter should be bool
+	// Bool - Method parameter should be bool.
 	Bool
-	//Number - Any number (for now this is alias)
+	// Number - Any number (for now this is alias).
 	Number
 )
 
@@ -189,8 +191,8 @@ func (mpt MethodParamType) String() string {
 	}
 }
 
-func (t MethodParamType) DefaultValue() interface{} {
-	switch t {
+func (mpt MethodParamType) DefaultValue() interface{} {
+	switch mpt {
 	case String:
 		return ""
 	case Number:
@@ -203,6 +205,7 @@ func (t MethodParamType) DefaultValue() interface{} {
 		panic("Sloppy programmer")
 	}
 }
+
 func parseEncoding(value string) (MethodEncoding, error) {
 	value = strings.ToLower(value)
 	switch value {
@@ -213,7 +216,7 @@ func parseEncoding(value string) (MethodEncoding, error) {
 	case "base85", "ascii85":
 		return Base85, nil
 	default:
-		return Utf8, fmt.Errorf("unknown encoding: %s", value)
+		return Utf8, fmt.Errorf("%w: unknown encoding: %s", ErrInvalidConfig, value)
 	}
 }
 
@@ -226,7 +229,7 @@ func parseBindType(bindType string) (BindType, error) {
 	case "unix":
 		return Unix, nil
 	default:
-		return HTTP, fmt.Errorf("unknown bind type %v", bindType)
+		return HTTP, fmt.Errorf("%w: unknown bind type %v", ErrInvalidConfig, bindType)
 	}
 }
 
@@ -239,13 +242,13 @@ func parseMethodParamType(value string) (MethodParamType, error) {
 	case "bool", "boolean":
 		return Bool, nil
 	default:
-		return String, errors.New("unknown type")
+		return String, fmt.Errorf("%w: unknown type", ErrInvalidConfig)
 	}
 }
 
 type FileMode os.FileMode
 
-// Bind - describe listening address binding
+// Bind - describe listening address binding.
 type Bind struct {
 	Type         BindType
 	Address      string
@@ -261,7 +264,7 @@ type Bind struct {
 	Key string
 }
 
-// Protocol - define bind points, auth and URI paths
+// Protocol - define bind points, auth and URI paths.
 type Protocol struct {
 	Bind []*Bind
 
@@ -285,7 +288,7 @@ type Limits struct {
 
 func DefaultLimits() Limits {
 	return Limits{
-		time.Duration(10000 * time.Millisecond),
+		10000 * time.Millisecond,
 		time.Duration(0),
 		5242880,
 		5242880,
@@ -326,7 +329,8 @@ func parseExecType(val string) (ExecType, error) {
 	case "shell_wrapper":
 		return ExecTypeShellWrapper, nil
 	}
-	return 0, fmt.Errorf("invalid exec type: %s", val)
+
+	return 0, fmt.Errorf("%w: invalid exec type: %s", ErrInvalidConfig, val)
 }
 
 type Exec struct {
@@ -356,8 +360,7 @@ type RawMethodDef struct {
 	Encoding      MethodEncoding
 	Params        map[string]MethodParam
 	InvokeInfo    InvokeInfoDef `yaml:"invoke"`
-	// Pointer because we need to know when its unsed
-	Limits MethodLimits
+	Limits        MethodLimits
 	// unused parameter
 	Output interface{}
 }
@@ -380,12 +383,13 @@ func aggregateArgs(a MethodArgs, b map[string]bool) {
 	if !a.Static && !a.Compound && a.Param != "self" {
 		b[a.Param] = true
 	}
+
 	for _, v := range a.Child {
 		aggregateArgs(v, b)
 	}
 }
 
-// Validate ensure correct method definition
+// Validate ensure correct method definition.
 func (m RawMethodDef) Validate() error {
 	if !m.AllowRPC && !m.AllowStreamed {
 		return fmt.Errorf("%w: method has disabled streamed and RPC response", ErrInvalidDefinition)
@@ -422,7 +426,7 @@ func (m RawMethodDef) Validate() error {
 	return nil
 }
 
-type config struct {
+type Config struct {
 	Include  []rawInclude
 	Log      LogDef
 	Protocol Protocol
@@ -435,11 +439,13 @@ func listNodeFieldsV2(node parse.Node) []string {
 	if node.Type() == parse.NodeAction {
 		res = append(res, node.String())
 	}
+
 	if ln, ok := node.(*parse.ListNode); ok {
 		for _, n := range ln.Nodes {
 			res = append(res, listNodeFieldsV2(n)...)
 		}
 	}
+
 	return res
 }
 
@@ -456,39 +462,49 @@ func (c *config) Load(paths ...string) error {
 	for _, path := range paths {
 		pathToVisit.push(path)
 	}
+
 	for pathToVisit.len() != 0 {
 		path := pathToVisit.pop()
 		logger.Trace().Str("loading", path).Send()
+
 		bytes, e := os.Open(path)
 		if e != nil {
 			return e
 		}
+
 		var specialOne config
+
 		decoder := yaml.NewDecoder(bytes)
 		decoder.SetStrict(true)
+
 		if err := decoder.Decode(&specialOne); err != nil {
 			return err
 		}
 		// do we have any includes
 		for _, v := range specialOne.Include {
-			path := v.Path //.AsString("")
+			path := v.Path
 			req := v.Required
-			fs, e := searchFiles(path, req)
+			files, e := searchFiles(path, req)
+
 			if e != nil {
 				return e
 			}
-			for _, f := range fs {
+
+			for _, f := range files {
 				klon := f
 				pathToVisit.push(klon)
 			}
 		}
 		// ensure default Mode parameter
+		const defaultMode = FileMode(0o666)
+
 		for i := range specialOne.Protocol.Bind {
 			b := specialOne.Protocol.Bind[i]
 			if b.Mode == FileMode(0) {
-				b.Mode = FileMode(0666)
+				b.Mode = defaultMode
 			}
 		}
+
 		mergeConfig(c, specialOne)
 	}
 	// ensure empty method limits are now filled with proper values
@@ -507,6 +523,7 @@ func (c *config) Load(paths ...string) error {
 			return fmt.Errorf("%s: %w", i, err)
 		}
 	}
+
 	return nil
 }
 
@@ -514,6 +531,7 @@ func mergeProtocol(a *Protocol, b Protocol) {
 	if b.AuthBasic != nil {
 		a.AuthBasic = b.AuthBasic
 	}
+
 	a.Bind = append(a.Bind, b.Bind...)
 }
 
@@ -521,22 +539,27 @@ func mergeLog(a *LogDef, b LogDef) {
 	if b.Backend != BackendUndefined {
 		a.Backend = b.Backend
 	}
+
 	if b.LogLevel != LLUndefined {
 		a.LogLevel = b.LogLevel
 	}
+
 	if b.Path != "" {
 		a.Path = b.Path
 	}
 }
 
-func mergeConfig(a *config, b config) {
-	a.Include = append(a.Include, b.Include...)
-	mergeLog(&a.Log, b.Log)
-	if a.Methods == nil {
-		a.Methods = make(map[string]RawMethodDef)
+func mergeConfig(confA *config, confB config) {
+	confA.Include = append(confA.Include, confB.Include...)
+	mergeLog(&confA.Log, confB.Log)
+
+	if confA.Methods == nil {
+		confA.Methods = make(map[string]RawMethodDef)
 	}
-	for k := range b.Methods {
-		a.Methods[k] = b.Methods[k]
+
+	for k := range confB.Methods {
+		confA.Methods[k] = confB.Methods[k]
 	}
-	mergeProtocol(&a.Protocol, b.Protocol)
+
+	mergeProtocol(&confA.Protocol, confB.Protocol)
 }

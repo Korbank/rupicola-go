@@ -35,21 +35,21 @@ func (bind *Bind) bindHTTPS(srv *http.Server) error {
 }
 
 func (bind *Bind) bindUnix(srv *http.Server) error {
-	//todo: check
 	Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
 	srv.Addr = bind.Address
 	// Change umask to ensure socker is created with right
 	// permissions (at this point no other IO opeations are running)
 	// and then restore previous umask
 	oldmask := myUmask(int(bind.Mode) ^ 0777)
-	ln, err := ListenUnixLock(bind.Address)
+	listener, err := ListenUnixLock(bind.Address)
+
 	myUmask(oldmask)
 
 	if err != nil {
 		return err
 	}
+	defer listener.Close()
 
-	defer ln.Close()
 	uid := os.Getuid()
 	gid := os.Getgid()
 	if bind.UID >= 0 {
@@ -59,10 +59,11 @@ func (bind *Bind) bindUnix(srv *http.Server) error {
 		gid = bind.GID
 	}
 	if err := os.Chown(bind.Address, uid, gid); err != nil {
-		Logger.Error().Str("address", bind.Address).Int("uid", uid).Int("gid", gid).Msg("Setting permission failed")
+		Logger.Error().Str("address", bind.Address).Int("uid", uid).
+			Int("gid", gid).Msg("Setting permission failed")
 		return err
 	}
-	return srv.Serve(ln)
+	return srv.Serve(listener)
 }
 
 // Bind to interface and Start listening using provided mux and limits

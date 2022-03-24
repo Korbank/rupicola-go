@@ -132,7 +132,8 @@ func wrapWithFlusher(out io.Writer) io.Writer {
 
 // ServeHTTP is implementation of http interface
 func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	child.log.Debug().Str("address", r.RemoteAddr).Str("method", r.Method).Int64("size", r.ContentLength).Str("path", r.URL.String()).Msg("processing request")
+	child.log.Debug().Str("address", r.RemoteAddr).Str("method", r.Method).
+		Int64("size", r.ContentLength).Str("path", r.URL.String()).Msg("processing request")
 
 	defer r.Body.Close()
 
