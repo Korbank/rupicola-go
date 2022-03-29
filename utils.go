@@ -4,8 +4,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/korbank/rupicola-go/rupicolarpc"
@@ -13,7 +11,7 @@ import (
 )
 
 const (
-	// The only "guard" agains mising FIN (happens on shitty networks)
+	// The only "guard" against mising FIN (happens on shitty networks)
 	// is setting deadline before each write so write call should
 	// end before running out of time (if you don't send petabytes of data
 	// in one call this is sufficient)
@@ -25,7 +23,9 @@ type writeWithGuard struct {
 }
 
 func (bb *writeWithGuard) Write(b []byte) (int, error) {
-	bb.SetWriteDeadline(time.Now().Add(globalTCPwriteTimeout))
+	if err := bb.SetWriteDeadline(time.Now().Add(globalTCPwriteTimeout)); err != nil {
+		return 0, err
+	}
 	return bb.Conn.Write(b)
 }
 
@@ -62,10 +62,6 @@ func (f *failureReader) Read([]byte) (int, error) {
 var (
 	rpcUnauthorizedError = rupicolarpc.NewServerError(-32000, "Unauthorized")
 )
-
-type rpcMethod *MethodDef
-
-type cmdEx *exec.Cmd
 
 type rupicolaRPCContext struct {
 	isAuthorized      bool
@@ -119,12 +115,11 @@ type flusher interface {
 
 type flushWrapper struct {
 	flusher
-	flush sync.Once
 }
 
 func (f *flushWrapper) Write(p []byte) (n int, err error) {
 	n, err = f.flusher.Write(p)
-	f.flusher.Flush()
+	f.Flush()
 	return
 }
 
@@ -137,7 +132,8 @@ func wrapWithFlusher(out io.Writer) io.Writer {
 
 // ServeHTTP is implementation of http interface
 func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	child.log.Debug().Str("address", r.RemoteAddr).Str("method", r.Method).Int64("size", r.ContentLength).Str("path", r.URL.String()).Msg("processing request")
+	child.log.Debug().Str("address", r.RemoteAddr).Str("method", r.Method).
+		Int64("size", r.ContentLength).Str("path", r.URL.String()).Msg("processing request")
 
 	defer r.Body.Close()
 
@@ -150,7 +146,7 @@ func (child *rupicolaProcessorChild) ServeHTTP(w http.ResponseWriter, r *http.Re
 
 	// Check for "payload size". According to spec
 	// Payload = 0 mean ignore
-	if child.parent.limits.PayloadSize > 0 && r.ContentLength > int64(child.parent.limits.PayloadSize) {
+	if child.parent.limits.PayloadSize > 0 && r.ContentLength > child.parent.limits.PayloadSize {
 		w.WriteHeader(http.StatusBadRequest)
 		child.log.Warn().Msg("request too big")
 		return

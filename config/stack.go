@@ -12,6 +12,7 @@ func (q *stack) pop() (n string) {
 	*q = (*q)[:x]
 	return
 }
+
 func (q *stack) len() int {
 	return len(*q)
 }

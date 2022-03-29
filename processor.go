@@ -3,11 +3,12 @@ package rupicola
 import (
 	"net/http"
 
+	"github.com/korbank/rupicola-go/config"
 	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
 type rupicolaProcessor struct {
-	limits    Limits
+	limits    config.Limits
 	processor rupicolarpc.JsonRpcProcessor
 	config    *Config
 }
@@ -19,28 +20,41 @@ func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
 		processor: rupicolarpc.NewJsonRpcProcessor()}
 
 	for k, v := range conf.Methods {
-		var metype rupicolarpc.MethodType
-		if v.Streamed {
-			metype = rupicolarpc.StreamingMethodLegacy
+		var metypes []rupicolarpc.MethodType
+		if v.AllowStreamed && v.AllowRPC {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.StreamingMethodLegacy,
+				rupicolarpc.RPCMethod,
+			}
+		} else if v.AllowStreamed {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.StreamingMethodLegacy,
+			}
+		} else if v.AllowRPC {
+			metypes = []rupicolarpc.MethodType{
+				rupicolarpc.RPCMethod,
+			}
 		} else {
-			metype = rupicolarpc.RPCMethod
+			panic("invalid configuration")
 		}
 
-		method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+		for _, metype := range metypes {
+			method := rupicolaProcessor.processor.AddMethod(k, metype, v)
 
-		if v.Limits.ExecTimeout >= 0 {
-			method.ExecutionTimeout(v.Limits.ExecTimeout)
-		}
-		if v.Limits.MaxResponse >= 0 {
-			method.MaxSize(uint(v.Limits.MaxResponse))
+			if v.Limits.ExecTimeout >= 0 {
+				method.ExecutionTimeout(v.Limits.ExecTimeout)
+			}
+			if v.Limits.MaxResponse >= 0 {
+				method.MaxSize(uint(v.Limits.MaxResponse))
+			}
 		}
 	}
 	return rupicolaProcessor
 }
 
 // Create separate context for given bind point (required for concurrent listening)
-func (proc *rupicolaProcessor) spawnChild(bind *Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{proc, bind, http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
+func (proc *rupicolaProcessor) spawnChild(bind *config.Bind) *rupicolaProcessorChild {
+	child := &rupicolaProcessorChild{proc, (*Bind)(bind), http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
 	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
 	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
 	return child

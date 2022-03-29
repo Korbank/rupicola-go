@@ -11,7 +11,7 @@ var (
 	nilInterface = interface{}(nil)
 )
 var (
-	errResultAlreadySet = errors.New("Result already set")
+	errResultAlreadySet = errors.New("result already set")
 )
 
 // RPCResponser handles returning results

@@ -1,261 +1,40 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template/parse"
 	"time"
 
+	log "github.com/rs/zerolog"
 	"gopkg.in/yaml.v2"
 )
 
+type config = Config
+
 var (
-	emptyValue = value{}
+	ErrInvalidConfig     = errors.New("invalid config")
+	ErrInvalidDefinition = fmt.Errorf("%w: invalid method definition", ErrInvalidConfig)
 )
 
-// Value represents any underlying value
-type Value interface {
-	Int32(def int32) int32
-	Uint32(def uint32) uint32
-	Int64(def int64) int64
-	Duration(def time.Duration) time.Duration
-	Map() map[string]Value
-	Array(def []interface{}) []Value
-	AsString(def string) string
-	Bool(def bool) bool
-	Get(key ...string) Value
-	get(key string) Value
-	IsValid() bool
-	IsArray() bool
-	IsMap() bool
-	Raw() interface{}
-}
-type mapValue struct {
-	Mapa map[string]Value
-}
-type listValue struct {
-	Lista []interface{}
-}
-type scalarValue struct {
-	Other interface{}
-}
-
-type value struct {
-	Mapa  map[string]Value
-	Lista []Value
-	Other interface{}
-}
-
-func (v *value) String() string {
-	if !v.IsValid() {
-		return "invalid"
-	}
-	if v.IsArray() {
-		return "array"
-	}
-	if v.IsMap() {
-		b := &strings.Builder{}
-		b.WriteString("{")
-
-		for k, v := range v.Mapa {
-			b.WriteString(k + ":" + fmt.Sprintf("%v", v))
-		}
-
-		b.WriteString("}")
-		return b.String()
-	}
-	return fmt.Sprintf("%v", v.Other)
-}
-
-func (v *value) IsArray() bool {
-	return v.Lista != nil
-}
-
-func (v *value) IsMap() bool {
-	return v.Mapa != nil
-}
-
-func (v *value) Raw() interface{} {
-	return v.Other
-}
-
-func (v *value) Uint32(def uint32) uint32 {
-	return uint32(v.Int64(int64(def)))
-}
-
-func (v *value) IsValid() bool {
-	return v.Mapa != nil || v.Lista != nil || v.Other != nil
-}
-
-func (v *value) Duration(def time.Duration) time.Duration {
-	return time.Duration(v.Int64(int64(def)))
-}
-func (v *value) AsString(def string) string {
-	if v.Other == nil {
-		return def
-	}
-	str, ok := v.Other.(string)
-	if ok {
-		return str
-	}
-	return def
-}
-
-func (v *value) Bool(def bool) bool {
-	if v.Other == nil {
-		return def
-	}
-	str, ok := v.Other.(bool)
-	if ok {
-		return str
-	}
-	return def
-}
-
-func (v *value) Map() map[string]Value {
-	return v.Mapa
-}
-
-func arrayFrom(def []interface{}) []Value {
-	var result []Value
-	for _, x := range def {
-		val := valFrom(x)
-		result = append(result, val)
-	}
-	return result
-}
-
-func (v *value) Array(def []interface{}) []Value {
-	// Yeeees we cast, loop and do other bad things
-	// but who cares
-	if v.Lista != nil {
-		return v.Lista
-	}
-	return arrayFrom(def)
-}
-
-func mapFrom2(this map[string]interface{}) map[string]Value {
-	mapa := make(map[string]Value)
-	for k, v := range this {
-		mapa[k] = valFrom(v)
-	}
-	return mapa
-}
-func mapFrom(this map[interface{}]interface{}) map[string]Value {
-	mapa := make(map[string]Value)
-	for k, v := range this {
-		var key string
-		switch cast := k.(type) {
-		case string:
-			key = cast
-			break
-		default:
-			key = fmt.Sprint(k)
-		}
-		mapa[key] = valFrom(v)
-	}
-	return mapa
-}
-
-// ValFrom wrapes provided value inside Value
-func ValFrom(this interface{}) Value {
-	return valFrom(this)
-}
-
-func valFrom(this interface{}) Value {
-	var val = new(value)
-	switch cast := this.(type) {
-	case Value:
-		return cast
-	case []Value:
-		val.Lista = cast
-	case map[string]Value:
-		val.Mapa = cast
-	case map[string]interface{}:
-		val.Mapa = mapFrom2(cast)
-	case map[interface{}]interface{}:
-		val.Mapa = mapFrom(cast)
-	case []interface{}:
-		val.Lista = arrayFrom(cast)
-	default:
-		val.Other = this
-	}
-	return val
-}
-func (v *value) get(key string) Value {
-	if v.Mapa == nil {
-		return &emptyValue
-	}
-	val, has := v.Mapa[key]
-	if !has {
-		return &emptyValue
-	}
-	return val
-}
-func (v *value) Get(keys ...string) Value {
-	current := Value(v)
-	for _, key := range keys {
-		current = current.get(key)
-	}
-	return current
-}
-
-func (v *value) Int64(def int64) int64 {
-	if v.Other == nil {
-		return def
-	}
-	switch cast := v.Other.(type) {
-	case int:
-		return int64(cast)
-	case int32:
-		return int64(cast)
-	case int64:
-		return cast
-	default:
-		return def
-	}
-}
-
-func (v *value) Int32(def int32) int32 {
-	// decode using bigger format
-	big := v.Int64(int64(def))
-	if big == int64(def) {
-		return def
-	}
-	// got some value, but can we cast it?
-
-	if big > math.MaxInt32 {
-		return def
-	}
-	return int32(big)
-}
-
-// Config uration
-type Config interface {
-	Get(key ...string) Value
-	Load(path ...string) error
-}
-type config struct {
-	root value
-	def  value
-}
-
-// NewConfig returns empty configuration
+// NewConfig returns empty configuration.
 func NewConfig() Config {
-	return new(config)
-}
-
-func (c *config) Get(key ...string) Value {
-	var currentValue Value
-	currentValue = &c.root
-	for _, k := range key {
-		currentValue = currentValue.Get(k)
+	return config{
+		Limits: DefaultLimits(),
+		Protocol: Protocol{
+			URI: struct {
+				Streamed string
+				RPC      string
+			}{
+				Streamed: "/streaming",
+				RPC:      "/jsonrpc",
+			},
+		},
 	}
-	return currentValue
 }
 
 func searchFiles(path string, required bool) (out []string, err error) {
@@ -264,7 +43,7 @@ func searchFiles(path string, required bool) (out []string, err error) {
 		if required {
 			return nil, err
 		}
-		//log.Warn("Optional config not found", "path", info.Name)
+		// log.Warn("Optional config not found", "path", info.Name)
 		return nil, nil
 	}
 
@@ -278,12 +57,404 @@ func searchFiles(path string, required bool) (out []string, err error) {
 					out = append(out, filepath.Join(path, finfo.Name()))
 				}
 			}
-
 		}
 	} else {
 		out = []string{path}
 	}
+
 	return
+}
+
+// BindType ...
+type BindType int
+
+const (
+	BindTypeUnknown BindType = iota
+	// HTTP - HTTP transport over TCP.
+	HTTP
+	// HTTPS - HTTPS transport over TCP.
+	HTTPS
+	// Unix - HTTP transport over unix socket.
+	Unix
+)
+
+// LogLevel describe logging level.
+type LogLevel int8
+
+const (
+	LLUndefined LogLevel = iota
+	// LLOff Disable log.
+	LLOff
+	// LLDebug most detailed log level (same as Trace).
+	LLDebug
+	// LLInfo only info and above.
+	LLInfo
+	// LLWarn only warning or errors.
+	LLWarn
+	// LLError only errors.
+	LLError
+)
+
+// LogDef holds logging definitions.
+type LogDef struct {
+	Backend
+	LogLevel `yaml:"level"`
+	Path     string
+}
+
+// Backend define log backend.
+type Backend int8
+
+const (
+	// BackendStdout write to stdout.
+	BackendStdout Backend = 1 << iota
+	// BackendSyslog write to syslog.
+	BackendSyslog Backend = 1 << iota
+	// BackendStderr write to stderr (default).
+	BackendStderr Backend = 1 << iota
+	// BackendKeep keep current output.
+	BackendKeep Backend = 1 << iota
+	// BackendUndefined is used when no value is defined in config.
+	BackendUndefined Backend = 0
+)
+
+func parseBackend(backend string) (Backend, error) {
+	switch strings.ToLower(backend) {
+	case "syslog":
+		return BackendSyslog, nil
+	case "stdout":
+		return BackendStdout, nil
+	case "stderr":
+		fallthrough
+	case "":
+		return BackendStderr, nil
+	default:
+		return BackendStdout, fmt.Errorf("%w: unknown backend %s", ErrInvalidConfig, backend)
+	}
+}
+
+func parseLoglevel(level string) (LogLevel, error) {
+	switch strings.ToLower(level) {
+	case "off":
+		return LLOff, nil
+	case "trace":
+		return LLDebug, nil
+	case "debug":
+		return LLDebug, nil
+	case "info":
+		return LLInfo, nil
+	case "warn":
+		return LLWarn, nil
+	case "error":
+		return LLError, nil
+	default:
+		return LLOff, fmt.Errorf("%w: unknown log level: %s", ErrInvalidConfig, level)
+	}
+}
+
+// MethodEncoding ...
+type MethodEncoding int
+
+const (
+	// Utf8 - Default message encoding.
+	Utf8 MethodEncoding = iota
+	// Base64 - Encode message as base64.
+	Base64
+	// Base85 - Encode message as base85.
+	Base85
+)
+
+// MethodParamType ...
+type MethodParamType int
+
+const (
+	// String - Method parameter should be string.
+	String MethodParamType = iota
+	// Int - Method parameter should be int (not float).
+	Int
+	// Bool - Method parameter should be bool.
+	Bool
+	// Number - Any number (for now this is alias).
+	Number
+)
+
+func (mpt MethodParamType) String() string {
+	switch mpt {
+	case String:
+		return "string"
+	case Int, Number:
+		return "int"
+	case Bool:
+		return "bool"
+	default:
+		return fmt.Sprintf("unknown(%d)", mpt)
+	}
+}
+
+func (mpt MethodParamType) DefaultValue() interface{} {
+	switch mpt {
+	case String:
+		return ""
+	case Number:
+		fallthrough
+	case Int:
+		return 0
+	case Bool:
+		return false
+	default:
+		panic("Sloppy programmer")
+	}
+}
+
+func parseEncoding(value string) (MethodEncoding, error) {
+	value = strings.ToLower(value)
+	switch value {
+	case "base64":
+		return Base64, nil
+	case "utf-8", "utf8":
+		return Utf8, nil
+	case "base85", "ascii85":
+		return Base85, nil
+	default:
+		return Utf8, fmt.Errorf("%w: unknown encoding: %s", ErrInvalidConfig, value)
+	}
+}
+
+func parseBindType(bindType string) (BindType, error) {
+	switch strings.ToLower(bindType) {
+	case "http":
+		return HTTP, nil
+	case "https":
+		return HTTPS, nil
+	case "unix":
+		return Unix, nil
+	default:
+		return HTTP, fmt.Errorf("%w: unknown bind type %v", ErrInvalidConfig, bindType)
+	}
+}
+
+func parseMethodParamType(value string) (MethodParamType, error) {
+	switch strings.ToLower(value) {
+	case "string":
+		return String, nil
+	case "integer", "int", "number":
+		return Int, nil
+	case "bool", "boolean":
+		return Bool, nil
+	default:
+		return String, fmt.Errorf("%w: unknown type", ErrInvalidConfig)
+	}
+}
+
+type FileMode os.FileMode
+
+// Bind - describe listening address binding.
+type Bind struct {
+	Type         BindType
+	Address      string
+	Port         uint16
+	AllowPrivate bool `yaml:"allow_private"`
+	// Only for Unix [default=660]
+	Mode FileMode
+	UID  int
+	GID  int
+	// Only for HTTPS
+	Cert string
+	// Only for HTTPS
+	Key string
+}
+
+// Protocol - define bind points, auth and URI paths.
+type Protocol struct {
+	Bind []*Bind
+
+	AuthBasic *struct {
+		Login    string
+		Password string
+	} `yaml:"auth-basic"`
+
+	URI struct {
+		Streamed string
+		RPC      string
+	}
+}
+
+type Limits struct {
+	ReadTimeout time.Duration `yaml:"read-timeout"`
+	ExecTimeout time.Duration `yaml:"exec-timeout"`
+	PayloadSize int64         `yaml:"payload-size"`
+	MaxResponse int64         `yaml:"max-response"`
+}
+
+func DefaultLimits() Limits {
+	return Limits{
+		10000 * time.Millisecond,
+		time.Duration(0),
+		5242880,
+		5242880,
+	}
+}
+
+type rawInclude struct {
+	Path     string
+	Required bool
+}
+
+// MethodParam ...
+type MethodParam struct {
+	Type       MethodParamType
+	Optional   bool
+	DefaultVal interface{} `yaml:"default"`
+}
+
+// RunAs ...
+type RunAs struct {
+	UID int
+	GID int
+}
+
+type ExecType int
+
+const (
+	ExecTypeDefault      ExecType = iota
+	ExecTypeShellWrapper          = iota
+)
+
+var logger = log.Nop()
+
+func parseExecType(val string) (ExecType, error) {
+	switch strings.ToLower(val) {
+	case "", "default":
+		return ExecTypeDefault, nil
+	case "shell_wrapper":
+		return ExecTypeShellWrapper, nil
+	}
+
+	return 0, fmt.Errorf("%w: invalid exec type: %s", ErrInvalidConfig, val)
+}
+
+type Exec struct {
+	Mode ExecType `yaml:"type"`
+	Path string
+}
+
+func (e Exec) String() string {
+	return fmt.Sprintf("Exec{Mode:%v Path:%s}", e.Mode, e.Path)
+}
+
+var _ fmt.Stringer = (*Exec)(nil)
+
+type InvokeInfoDef struct {
+	Exec  Exec
+	Delay time.Duration
+	Args  []MethodArgs
+	RunAs RunAs `yaml:"run-as"`
+}
+
+// MethodDef ...
+type RawMethodDef struct {
+	AllowStreamed bool `yaml:"streamed"`
+	AllowRPC      bool `yaml:"rpc"`
+	Private       bool
+	IncludeStderr bool `yaml:"include-stderr"`
+	Encoding      MethodEncoding
+	Params        map[string]MethodParam
+	InvokeInfo    InvokeInfoDef `yaml:"invoke"`
+	Limits        MethodLimits
+	// unused parameter
+	Output interface{}
+}
+
+// Limits ...
+type MethodLimits Limits
+
+type MethodArgs struct {
+	Param    string
+	Skip     bool
+	Static   bool
+	Compound bool
+	Child    []MethodArgs
+}
+
+// MethodLimits define execution limits for method
+// type MethodLimits methodLimits
+
+func aggregateArgs(a MethodArgs, b map[string]bool) {
+	if !a.Static && !a.Compound && a.Param != "self" {
+		b[a.Param] = true
+	}
+
+	for _, v := range a.Child {
+		aggregateArgs(v, b)
+	}
+}
+
+// Validate ensure correct method definition.
+func (m RawMethodDef) Validate() error {
+	if !m.AllowRPC && !m.AllowStreamed {
+		return fmt.Errorf("%w: method has disabled streamed and RPC response", ErrInvalidDefinition)
+	}
+
+	definedParams := make(map[string]bool)
+	definedArgs := make(map[string]bool)
+
+	for _, v := range m.InvokeInfo.Args {
+		aggregateArgs(v, definedArgs)
+	}
+
+	for k := range m.Params {
+		logger.Trace().Str("param", k).Send()
+
+		definedParams[k] = true
+	}
+
+	for k := range definedArgs {
+		if _, has := definedParams[k]; has {
+			definedParams[k] = false
+		} else {
+			// Fatal, or just return error?
+			return fmt.Errorf("%w: undeclared param '%v' in arguments", ErrInvalidDefinition, k)
+		}
+	}
+
+	for k, v := range definedParams {
+		if v {
+			logger.Warn().Str("name", k).Msg("unused parameter defined")
+		}
+	}
+
+	return nil
+}
+
+type Config struct {
+	Include  []rawInclude
+	Log      LogDef
+	Protocol Protocol
+	Limits   Limits
+	Methods  map[string]RawMethodDef
+}
+
+func listNodeFieldsV2(node parse.Node) []string {
+	var res []string
+	if node.Type() == parse.NodeAction {
+		res = append(res, node.String())
+	}
+
+	if ln, ok := node.(*parse.ListNode); ok {
+		for _, n := range ln.Nodes {
+			res = append(res, listNodeFieldsV2(n)...)
+		}
+	}
+
+	return res
+}
+
+func listUsedVariables(nodesName []string) []string {
+	names := make([]string, len(nodesName))
+	for i := range nodesName {
+		names[i] = strings.TrimPrefix(strings.TrimSuffix(nodesName[i], "}}"), "{{.")
+	}
+	return names
 }
 
 func (c *config) Load(paths ...string) error {
@@ -291,91 +462,104 @@ func (c *config) Load(paths ...string) error {
 	for _, path := range paths {
 		pathToVisit.push(path)
 	}
+
 	for pathToVisit.len() != 0 {
 		path := pathToVisit.pop()
-		log.Println("loading", path)
-		bytes, e := ioutil.ReadFile(path)
+		logger.Trace().Str("loading", path).Send()
+
+		bytes, e := os.Open(path)
 		if e != nil {
 			return e
 		}
-		val := new(value)
-		var specialOne map[string]interface{}
-		if err := yaml.Unmarshal(bytes, &specialOne); err != nil {
-			if err := yaml.Unmarshal(bytes, &val.Lista); err != nil {
-				if err := yaml.Unmarshal(bytes, &val.Other); err != nil {
-					return err
-				}
-			}
-		} else {
-			val.Mapa = mapFrom2(specialOne)
+
+		var specialOne config
+
+		decoder := yaml.NewDecoder(bytes)
+		decoder.SetStrict(true)
+
+		if err := decoder.Decode(&specialOne); err != nil {
+			return err
 		}
 		// do we have any includes
-		includesr := val.Get("include")
-		includes := includesr.Array(nil)
-		if len(includes) != 0 {
-			for _, v := range includes {
-				path := v.AsString("")
-				req := false
-				if path == "" {
-					compound := v.Map()
-					for k, v := range compound {
-						path = k
-						req = v.Bool(false)
-						break
-					}
-				}
-				fs, e := searchFiles(path, req)
-				if e != nil {
-					return e
-				}
-				for _, f := range fs {
-					klon := f
-					pathToVisit.push(klon)
-				}
+		for _, v := range specialOne.Include {
+			path := v.Path
+			req := v.Required
+			files, e := searchFiles(path, req)
+
+			if e != nil {
+				return e
+			}
+
+			for _, f := range files {
+				klon := f
+				pathToVisit.push(klon)
 			}
 		}
-		c.root.Mapa = mergeMap(c.root.Mapa, val.Mapa)
+		// ensure default Mode parameter
+		const defaultMode = FileMode(0o666)
+
+		for i := range specialOne.Protocol.Bind {
+			b := specialOne.Protocol.Bind[i]
+			if b.Mode == FileMode(0) {
+				b.Mode = defaultMode
+			}
+		}
+
+		mergeConfig(c, specialOne)
 	}
+	// ensure empty method limits are now filled with proper values
+	// for k, v := range c.Methods {
+	// 	l := &v.Limits
+	// 	if l.ExecTimeout < 0 {
+	// 		l.ExecTimeout = c.Limits.ExecTimeout
+	// 	}
+	// 	if l.MaxResponse < 0 {
+	// 		l.MaxResponse = int64(c.Limits.MaxResponse)
+	// 	}
+	// 	c.Methods[k] = v
+	// }
+	for i := range c.Methods {
+		if err := c.Methods[i].Validate(); err != nil {
+			return fmt.Errorf("%s: %w", i, err)
+		}
+	}
+
 	return nil
 }
 
-func pp(a Value, lvl int) {
-	if a.IsMap() {
-		for k, v := range a.Map() {
-			fmt.Printf("%s%s:\n", strings.Repeat(" ", lvl), k)
-			pp(v, lvl+1)
-		}
-	} else if a.IsArray() {
-		for _, v := range a.Array(nil) {
-			pp(v, lvl+1)
-		}
-	} else {
-		fmt.Printf("%s%v\n", strings.Repeat(" ", lvl), a.Raw())
+func mergeProtocol(a *Protocol, b Protocol) {
+	if b.AuthBasic != nil {
+		a.AuthBasic = b.AuthBasic
+	}
+
+	a.Bind = append(a.Bind, b.Bind...)
+}
+
+func mergeLog(a *LogDef, b LogDef) {
+	if b.Backend != BackendUndefined {
+		a.Backend = b.Backend
+	}
+
+	if b.LogLevel != LLUndefined {
+		a.LogLevel = b.LogLevel
+	}
+
+	if b.Path != "" {
+		a.Path = b.Path
 	}
 }
 
-func mergeValue(a, b Value) Value {
-	if a.IsMap() && b.IsMap() {
-		return valFrom(mergeMap(a.Map(), b.Map()))
-	} else if a.IsArray() && b.IsArray() {
-		return valFrom(append(a.Array(nil), b.Array(nil)...))
-	}
-	return b
-}
+func mergeConfig(confA *config, confB config) {
+	confA.Include = append(confA.Include, confB.Include...)
+	mergeLog(&confA.Log, confB.Log)
 
-func mergeMap(a, b map[string]Value) map[string]Value {
-	c := make(map[string]Value)
-	for k, v := range a {
-		c[k] = v
+	if confA.Methods == nil {
+		confA.Methods = make(map[string]RawMethodDef)
 	}
 
-	for k, v := range b {
-		av, has := a[k]
-		if has {
-			c[k] = mergeValue(av, v)
-		} else {
-			c[k] = v
-		}
+	for k := range confB.Methods {
+		confA.Methods[k] = confB.Methods[k]
 	}
-	return c
+
+	mergeProtocol(&confA.Protocol, confB.Protocol)
 }

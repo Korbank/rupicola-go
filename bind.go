@@ -6,10 +6,68 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+
+	"github.com/korbank/rupicola-go/config"
 )
 
+type Bind config.Bind
+
+func (bind *Bind) bindHTTP(srv *http.Server) error {
+	Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
+	ln, err := ListenKeepAlive("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
+	return srv.Serve(ln)
+}
+
+func (bind *Bind) bindHTTPS(srv *http.Server) error {
+	Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
+	srv.TLSConfig = &tls.Config{
+		MinVersion:               tls.VersionTLS12,
+		PreferServerCipherSuites: true,
+	}
+	ln, err := ListenKeepAlive("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
+	return srv.ServeTLS(ln, bind.Cert, bind.Key)
+}
+
+func (bind *Bind) bindUnix(srv *http.Server) error {
+	Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
+	srv.Addr = bind.Address
+	// Change umask to ensure socker is created with right
+	// permissions (at this point no other IO opeations are running)
+	// and then restore previous umask
+	oldmask := myUmask(int(bind.Mode) ^ 0777)
+	listener, err := ListenUnixLock(bind.Address)
+
+	myUmask(oldmask)
+
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	uid := os.Getuid()
+	gid := os.Getgid()
+	if bind.UID >= 0 {
+		uid = bind.UID
+	}
+	if bind.GID >= 0 {
+		gid = bind.GID
+	}
+	if err := os.Chown(bind.Address, uid, gid); err != nil {
+		Logger.Error().Str("address", bind.Address).Int("uid", uid).
+			Int("gid", gid).Msg("Setting permission failed")
+		return err
+	}
+	return srv.Serve(listener)
+}
+
 // Bind to interface and Start listening using provided mux and limits
-func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
+func (bind *Bind) Bind(mux *http.ServeMux, limits config.Limits) error {
 	srv := &http.Server{
 		Addr:        bind.Address + ":" + strconv.Itoa(int(bind.Port)),
 		Handler:     mux,
@@ -18,47 +76,18 @@ func (bind *Bind) Bind(mux *http.ServeMux, limits Limits) error {
 	}
 
 	switch bind.Type {
-	case HTTP:
-		Logger.Info().Str("type", "http").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.Serve(ln)
+	case config.HTTP:
+		return bind.bindHTTP(srv)
 
-	case HTTPS:
-		srv.TLSConfig = &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			PreferServerCipherSuites: true,
-		}
-		Logger.Info().Str("type", "https").Str("address", bind.Address).Uint16("port", bind.Port).Msg("starting listener")
-		ln, err := ListenKeepAlive("tcp", srv.Addr)
-		if err != nil {
-			return err
-		}
-		return srv.ServeTLS(ln, bind.Cert, bind.Key)
+	case config.HTTPS:
+		return bind.bindHTTPS(srv)
 
-	case Unix:
-		//todo: check
-		Logger.Info().Str("type", "unix").Str("address", bind.Address).Msg("starting listener")
-		srv.Addr = bind.Address
-		// Change umask to ensure socker is created with right
-		// permissions (at this point no other IO opeations are running)
-		// and then restore previous umask
-		oldmask := myUmask(int(bind.Mode) ^ 0777)
-		ln, err := ListenUnixLock(bind.Address)
-		myUmask(oldmask)
-
-		if err != nil {
-			return err
-		}
-
-		defer ln.Close()
-		if err := os.Chown(bind.Address, bind.UID, bind.GID); err != nil {
-			Logger.Error().Str("address", bind.Address).Int("uid", bind.UID).Int("gid", bind.GID).Msg("Setting permission failed")
-			return err
-		}
-		return srv.Serve(ln)
+	case config.Unix:
+		return bind.bindUnix(srv)
+	case config.BindTypeUnknown:
+		fallthrough
+	default:
+		return errors.New("unsupported bind type")
+		// return errors.New("unknown bind type")
 	}
-	return errors.New("Unknown case")
 }
