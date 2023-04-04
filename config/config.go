@@ -38,32 +38,38 @@ func NewConfig() Config {
 	}
 }
 
-func searchFiles(path string, required bool) (out []string, err error) {
+func searchFiles(path string, required bool) ([]string, error) {
 	fileInfo, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		if required {
 			return nil, err
 		}
-		// log.Warn("Optional config not found", "path", info.Name)
+
+		logger.Warn().Str("path", path).Msg("Optional config not found")
+
 		return nil, nil
 	}
 
-	if fileInfo.IsDir() {
-		var entries []os.FileInfo
-		if entries, err = ioutil.ReadDir(path); err == nil {
-			for _, finfo := range entries {
-				if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
-					// first field doesn't matter - we are including files from directory so
-					// they should exists
-					out = append(out, filepath.Join(path, finfo.Name()))
-				}
-			}
-		}
-	} else {
-		out = []string{path}
+	out := make([]string, 0)
+
+	if !fileInfo.IsDir() {
+		return []string{path}, nil
 	}
 
-	return
+	entries, err := ioutil.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, finfo := range entries {
+		if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
+			// first field doesn't matter - we are including files from directory so
+			// they should exists
+			out = append(out, filepath.Join(path, finfo.Name()))
+		}
+	}
+
+	return out, nil
 }
 
 // BindType ...
@@ -322,6 +328,10 @@ const (
 )
 
 var logger = log.Nop()
+
+func SetTemporaryLog(log log.Logger) {
+	logger = log
+}
 
 func parseExecType(val string) (ExecType, error) {
 	switch strings.ToLower(val) {

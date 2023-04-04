@@ -116,6 +116,9 @@ func ReadConfig(configFilePath string) (Config, error) {
 	c := Config{
 		Config: config.NewConfig(),
 	}
+
+	config.SetTemporaryLog(Logger)
+
 	if err := c.Load(configFilePath); err != nil {
 		return c, err
 	}
