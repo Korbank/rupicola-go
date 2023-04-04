@@ -1,6 +1,7 @@
 package config
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -458,19 +459,20 @@ func listUsedVariables(nodesName []string) []string {
 }
 
 func (c *config) Load(paths ...string) error {
-	pathToVisit := new(stack)
+	pathToVisit := list.New()
 	for _, path := range paths {
-		pathToVisit.push(path)
+		pathToVisit.PushBack(path)
 	}
 
-	for pathToVisit.len() != 0 {
-		path := pathToVisit.pop()
+	for pathToVisit.Len() != 0 {
+		path := pathToVisit.Remove(pathToVisit.Front()).(string)
 		logger.Trace().Str("loading", path).Send()
 
 		bytes, e := os.Open(path)
 		if e != nil {
 			return e
 		}
+		defer bytes.Close()
 
 		var specialOne config
 
@@ -478,7 +480,7 @@ func (c *config) Load(paths ...string) error {
 		decoder.SetStrict(true)
 
 		if err := decoder.Decode(&specialOne); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", path, err)
 		}
 		// do we have any includes
 		for _, v := range specialOne.Include {
@@ -492,7 +494,7 @@ func (c *config) Load(paths ...string) error {
 
 			for _, f := range files {
 				klon := f
-				pathToVisit.push(klon)
+				pathToVisit.PushBack(klon)
 			}
 		}
 		// ensure default Mode parameter
