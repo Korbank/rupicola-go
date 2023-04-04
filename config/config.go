@@ -273,7 +273,7 @@ type Bind struct {
 
 // Protocol - define bind points, auth and URI paths.
 type Protocol struct {
-	Bind []*Bind
+	Bind []Bind
 
 	AuthBasic *struct {
 		Login    string
@@ -414,8 +414,6 @@ func (m RawMethodDef) Validate() error {
 	}
 
 	for k := range m.Params {
-		logger.Trace().Str("param", k).Send()
-
 		definedParams[k] = true
 	}
 
@@ -544,7 +542,28 @@ func mergeProtocol(a *Protocol, b Protocol) {
 		a.AuthBasic = b.AuthBasic
 	}
 
-	a.Bind = append(a.Bind, b.Bind...)
+	aBindLen := len(a.Bind)
+	if aBindLen == 0 {
+		a.Bind = append(a.Bind, b.Bind...)
+
+		return
+	}
+
+	// add UNIQUE bind points
+	for aIndex := 0; aIndex < aBindLen; aIndex++ {
+		aBind := a.Bind[aIndex]
+
+		for bIndex := range b.Bind {
+			bBind := b.Bind[bIndex]
+			if aBind == bBind {
+				logger.Warn().Msg("duplicated bind point")
+
+				continue
+			}
+
+			a.Bind = append(a.Bind, bBind)
+		}
+	}
 }
 
 func mergeLog(a *LogDef, b LogDef) {

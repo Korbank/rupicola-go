@@ -2,13 +2,16 @@ package rupicola
 
 import "fmt"
 
-func ListenAndServe(configuration *Config) error {
+func ListenAndServe(configuration Config) error {
 	rupicolaProcessor := newRupicolaProcessorFromConfig(configuration)
 
 	failureChannel := make(chan error)
-	for _, bind := range configuration.Protocol.Bind {
+
+	for idx := range configuration.Protocol.Bind {
+		bind := configuration.Protocol.Bind[idx]
 		child := rupicolaProcessor.spawnChild(bind)
 		Logger.Info().Str("bind", fmt.Sprintf("%+v", bind)).Msg("Spawning worker")
+
 		go func() {
 			failureChannel <- child.listen()
 		}()

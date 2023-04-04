@@ -9,43 +9,49 @@ import (
 
 type rupicolaProcessor struct {
 	limits    config.Limits
-	processor rupicolarpc.JsonRpcProcessor
-	config    *Config
+	processor rupicolarpc.JSONRPCProcessor
+	config    Config
 }
 
-func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
+func newRupicolaProcessorFromConfig(conf Config) *rupicolaProcessor {
 	rupicolaProcessor := &rupicolaProcessor{
 		config:    conf,
 		limits:    conf.Limits,
-		processor: rupicolarpc.NewJsonRpcProcessor()}
+		processor: rupicolarpc.NewJSONRPCProcessor(),
+	}
 
-	for k, v := range conf.Methods {
+	for methodName := range conf.Methods {
+		methodDef := conf.Methods[methodName]
+
 		var metypes []rupicolarpc.MethodType
-		if v.AllowStreamed && v.AllowRPC {
+
+		switch {
+		case methodDef.AllowStreamed && methodDef.AllowRPC:
 			metypes = []rupicolarpc.MethodType{
 				rupicolarpc.StreamingMethodLegacy,
 				rupicolarpc.RPCMethod,
 			}
-		} else if v.AllowStreamed {
+		case methodDef.AllowStreamed:
 			metypes = []rupicolarpc.MethodType{
 				rupicolarpc.StreamingMethodLegacy,
 			}
-		} else if v.AllowRPC {
+		case methodDef.AllowRPC:
 			metypes = []rupicolarpc.MethodType{
 				rupicolarpc.RPCMethod,
 			}
-		} else {
+		default:
 			panic("invalid configuration")
 		}
 
-		for _, metype := range metypes {
-			method := rupicolaProcessor.processor.AddMethod(k, metype, v)
+		for i := range metypes {
+			metype := metypes[i]
+			method := rupicolaProcessor.processor.AddMethod(methodName, metype, methodDef)
 
-			if v.Limits.ExecTimeout >= 0 {
-				method.ExecutionTimeout(v.Limits.ExecTimeout)
+			if methodDef.Limits.ExecTimeout >= 0 {
+				method.ExecutionTimeout(methodDef.Limits.ExecTimeout)
 			}
-			if v.Limits.MaxResponse >= 0 {
-				method.MaxSize(uint(v.Limits.MaxResponse))
+			if methodDef.Limits.MaxResponse >= 0 {
+				method.MaxSize(uint(methodDef.Limits.MaxResponse))
 			}
 		}
 	}
@@ -53,8 +59,13 @@ func newRupicolaProcessorFromConfig(conf *Config) *rupicolaProcessor {
 }
 
 // Create separate context for given bind point (required for concurrent listening)
-func (proc *rupicolaProcessor) spawnChild(bind *config.Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{proc, (*Bind)(bind), http.NewServeMux(), Logger.With().Str("bindpoint", bind.Address).Logger()}
+func (proc *rupicolaProcessor) spawnChild(bind config.Bind) *rupicolaProcessorChild {
+	child := &rupicolaProcessorChild{
+		parent: proc,
+		bind:   Bind(bind),
+		mux:    http.NewServeMux(),
+		log:    Logger.With().Str("bindpoint", bind.Address).Logger(),
+	}
 	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
 	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
 	return child

@@ -5,9 +5,9 @@ import (
 	"io"
 )
 
-//TODO: How do we handle empty id?
-//Disallow? in rpc it's "notification"
-//but for stream... pointless
+// TODO: How do we handle empty id?
+// Disallow? in rpc it's "notification"
+// but for stream... pointless
 type streamingResponse struct {
 	baseResponse
 	buffer     *bytes.Buffer
@@ -16,11 +16,11 @@ type streamingResponse struct {
 	isClosed   bool
 }
 
-func newStreamingResponse(writer io.Writer, n int) rpcResponserPriv {
+func newStreamingResponse(writer io.Writer, n int) *streamingResponse {
 	limited := ExceptionalLimitWrite(writer, 0)
 	result := &streamingResponse{
 		baseResponse: newBaseResponse(writer, limited),
-		buffer:       bytes.NewBuffer(make([]byte, 0, 128)),
+		buffer:       &bytes.Buffer{},
 		chunkSize:    n,
 		firstWrite:   true,
 	}
@@ -38,10 +38,12 @@ func (b *streamingResponse) Close() (err error) {
 	b.isClosed = true
 	return
 }
+
 func (b *streamingResponse) commit() (err error) {
 	if b.buffer.Len() <= 0 {
 		return
 	}
+
 	var resp struct {
 		Data interface{}  `json:"data"`
 		ID   *interface{} `json:"id,omitempty"`
@@ -78,25 +80,27 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 			return
 		}
 	}
+
 	var resp struct {
 		Data interface{}  `json:"data"`
 		ID   *interface{} `json:"id,omitempty"`
 	}
 	resp.ID = b.id
-	//TODO: Can we do better?
+	// TODO: Can we do better?
 	if b.chunkSize <= 0 {
-		result := bytes.SplitAfter(p, []byte("\n"))
 		var npart int
-		for _, v := range result {
-			lenv := len(v)
+
+		result := bytes.SplitAfter(p, []byte("\n"))
+		for _, line := range result {
+			lenv := len(line)
 
 			if lenv == 0 {
 				// Well looks like this can happen
 				continue
 			}
 
-			if v[lenv-1] == '\n' {
-				lineWithoutEnding := v[:len(v)-1]
+			if line[lenv-1] == '\n' {
+				lineWithoutEnding := line[:len(line)-1]
 				// special case with dangling data in buffer
 				if b.buffer.Len() != 0 {
 					_, err = b.buffer.Write(lineWithoutEnding)
@@ -115,7 +119,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 				n += lenv
 			} else {
 				// Oh dang! We get some leftovers...
-				npart, err = b.buffer.Write(v)
+				npart, err = b.buffer.Write(line)
 				if err != nil {
 					return n, err
 				}
@@ -147,6 +151,7 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 				return
 			}
 		}
+
 		var lastN int
 		lastN, err = b.buffer.Write(p[chunk:])
 		if err != nil {
@@ -163,28 +168,29 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 	return
 }
 
-func (b *streamingResponse) SetResponseError(e error) (err error) {
-	if !b.isClosed {
-		if err = b.commit(); err != nil {
-			return
-		}
-		// Make unlimited writer (errors should always be written)
-		b.MaxResponse(0)
-		// Force close flag, to prevent sending "DONE" after error
-		b.isClosed = true
-		err = b.encoder.Encode(NewErrorEx(e, b.id, JsonRPCversion20s))
-		defer b.Close()
-		if err != nil {
-			Logger.Debug().Err(err).Msg("Unable to send error information")
-			return
-		}
-		return b.Close()
+func (b *streamingResponse) SetResponseError(respErr error) (err error) {
+	if b.isClosed {
+		Logger.Warn().Msg("Setting error more than once!")
+		return
 	}
-	Logger.Warn().Msg("Setting error more than once!")
-	return
+
+	if err = b.commit(); err != nil {
+		return
+	}
+	defer b.Close()
+	// Make unlimited writer (errors should always be written)
+	b.MaxResponse(0)
+	// Force close flag, to prevent sending "DONE" after error
+	b.isClosed = true
+	err = b.encoder.Encode(NewErrorEx(respErr, b.id, JSONRPCversion20s))
+	if err != nil {
+		Logger.Debug().Err(err).Msg("Unable to send error information")
+		return
+	}
+	return b.Close()
 }
 
-func (b *streamingResponse) SetResponseResult(r interface{}) error {
+func (b *streamingResponse) SetResponseResult(result interface{}) error {
 	if b.isClosed {
 		Logger.Warn().Msg("Unable to set result on closed response")
 		return nil
@@ -193,5 +199,5 @@ func (b *streamingResponse) SetResponseResult(r interface{}) error {
 		return err
 	}
 	// Warning this will not be chunked, pass it through chunker?
-	return b.encoder.Encode(NewResultEx(r, b.id, JsonRPCversion20s))
+	return b.encoder.Encode(NewResultEx(result, b.id, JSONRPCversion20s))
 }
