@@ -2,6 +2,7 @@ package config
 
 import (
 	"container/list"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -173,6 +174,25 @@ const (
 	Base85
 )
 
+func (m MethodEncoding) String() string {
+	switch m {
+	case Utf8:
+		return "utf-8"
+	case Base64:
+		return "base64"
+	case Base64Url:
+		return "base64-url"
+	case Base85:
+		return "base85"
+	default:
+		return fmt.Sprintf("unknown(%d)", m)
+	}
+}
+
+func (m MethodEncoding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
 // MethodParamType ...
 type MethodParamType int
 
@@ -198,6 +218,10 @@ func (mpt MethodParamType) String() string {
 	default:
 		return fmt.Sprintf("unknown(%d)", mpt)
 	}
+}
+
+func (mpt MethodParamType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(mpt.String())
 }
 
 func (mpt MethodParamType) DefaultValue() interface{} {
@@ -348,6 +372,17 @@ func parseExecType(val string) (ExecType, error) {
 	return 0, fmt.Errorf("%w: invalid exec type: %s", ErrInvalidConfig, val)
 }
 
+func (e ExecType) String() string {
+	switch e {
+	case ExecTypeDefault:
+		return "exec"
+	case ExecTypeShellWrapper:
+		return "shell_wrapper"
+	default:
+		return fmt.Sprintf("unknown (%d)", e)
+	}
+}
+
 type Exec struct {
 	Mode ExecType `yaml:"type"`
 	Path string
@@ -355,6 +390,10 @@ type Exec struct {
 
 func (e Exec) String() string {
 	return fmt.Sprintf("Exec{Mode:%v Path:%s}", e.Mode, e.Path)
+}
+
+func (e ExecType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.String())
 }
 
 var _ fmt.Stringer = (*Exec)(nil)

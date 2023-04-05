@@ -101,6 +101,17 @@ func (m *MethodDef) CheckParams(params map[string]interface{}) error {
 	return nil
 }
 
+func (m MethodDef) MarshalZerologObject(e *log.Event) {
+	e.Bool("rpc", m.AllowRPC).
+		Bool("streamed", m.AllowStreamed).
+		Bool("capture stderr", m.IncludeStderr).
+		Bool("private", m.Private).
+		Stringer("encoding", m.Encoding).
+		Interface("invoke", m.InvokeInfo).
+		Interface("limits", m.Limits).
+		Interface("params", m.Params)
+}
+
 func (conf Config) isValidAuth(login string, password string) bool {
 	if conf.Protocol.AuthBasic != nil && conf.Protocol.AuthBasic.Login != "" {
 		// NOTE: Verify method is not time constant!
@@ -129,7 +140,7 @@ func ReadConfig(configFilePath string) (Config, error) {
 			RawMethodDef: c.Config.Methods[methodName],
 			logger:       Logger.With().Str("method", methodName).Logger(),
 		}
-		meth.logger.Info().Str("details", fmt.Sprintf("%+v", meth)).Msg("add new method")
+		meth.logger.Info().Object("details", meth).Msg("add new method")
 		c.Methods[methodName] = &meth
 	}
 	return c, nil
