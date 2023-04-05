@@ -148,8 +148,14 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JSONRPCRequest) 
 	reader := io.ReadCloser(pr)
 
 	switch m.Encoding {
-	case config.Base64:
-		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
+	case config.Base64, config.Base64Url:
+		var standard *base64.Encoding
+		if m.Encoding == config.Base64 {
+			standard = base64.StdEncoding
+		} else {
+			standard = base64.URLEncoding
+		}
+		writerEncoder := base64.NewEncoder(standard, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder

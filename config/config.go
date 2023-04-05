@@ -165,8 +165,10 @@ type MethodEncoding int
 const (
 	// Utf8 - Default message encoding.
 	Utf8 MethodEncoding = iota
-	// Base64 - Encode message as base64.
+	// Base64 - Encode message as base64 (STD).
 	Base64
+	// Base64Url - Encode message as base64 (URL).
+	Base64Url
 	// Base85 - Encode message as base85.
 	Base85
 )
@@ -218,6 +220,8 @@ func parseEncoding(value string) (MethodEncoding, error) {
 	switch value {
 	case "base64":
 		return Base64, nil
+	case "base64-url":
+		return Base64Url, nil
 	case "utf-8", "utf8":
 		return Utf8, nil
 	case "base85", "ascii85":
