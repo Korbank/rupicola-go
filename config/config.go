@@ -1,6 +1,8 @@
 package config
 
 import (
+	"container/list"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -37,32 +39,38 @@ func NewConfig() Config {
 	}
 }
 
-func searchFiles(path string, required bool) (out []string, err error) {
+func searchFiles(path string, required bool) ([]string, error) {
 	fileInfo, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		if required {
 			return nil, err
 		}
-		// log.Warn("Optional config not found", "path", info.Name)
+
+		logger.Warn().Str("path", path).Msg("Optional config not found")
+
 		return nil, nil
 	}
 
-	if fileInfo.IsDir() {
-		var entries []os.FileInfo
-		if entries, err = ioutil.ReadDir(path); err == nil {
-			for _, finfo := range entries {
-				if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
-					// first field doesn't matter - we are including files from directory so
-					// they should exists
-					out = append(out, filepath.Join(path, finfo.Name()))
-				}
-			}
-		}
-	} else {
-		out = []string{path}
+	out := make([]string, 0)
+
+	if !fileInfo.IsDir() {
+		return []string{path}, nil
 	}
 
-	return
+	entries, err := ioutil.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, finfo := range entries {
+		if !finfo.IsDir() && filepath.Ext(finfo.Name()) == ".conf" {
+			// first field doesn't matter - we are including files from directory so
+			// they should exists
+			out = append(out, filepath.Join(path, finfo.Name()))
+		}
+	}
+
+	return out, nil
 }
 
 // BindType ...
@@ -158,11 +166,32 @@ type MethodEncoding int
 const (
 	// Utf8 - Default message encoding.
 	Utf8 MethodEncoding = iota
-	// Base64 - Encode message as base64.
+	// Base64 - Encode message as base64 (STD).
 	Base64
+	// Base64Url - Encode message as base64 (URL).
+	Base64Url
 	// Base85 - Encode message as base85.
 	Base85
 )
+
+func (m MethodEncoding) String() string {
+	switch m {
+	case Utf8:
+		return "utf-8"
+	case Base64:
+		return "base64"
+	case Base64Url:
+		return "base64-url"
+	case Base85:
+		return "base85"
+	default:
+		return fmt.Sprintf("unknown(%d)", m)
+	}
+}
+
+func (m MethodEncoding) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
 
 // MethodParamType ...
 type MethodParamType int
@@ -191,6 +220,10 @@ func (mpt MethodParamType) String() string {
 	}
 }
 
+func (mpt MethodParamType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(mpt.String())
+}
+
 func (mpt MethodParamType) DefaultValue() interface{} {
 	switch mpt {
 	case String:
@@ -211,6 +244,8 @@ func parseEncoding(value string) (MethodEncoding, error) {
 	switch value {
 	case "base64":
 		return Base64, nil
+	case "base64-url":
+		return Base64Url, nil
 	case "utf-8", "utf8":
 		return Utf8, nil
 	case "base85", "ascii85":
@@ -266,7 +301,7 @@ type Bind struct {
 
 // Protocol - define bind points, auth and URI paths.
 type Protocol struct {
-	Bind []*Bind
+	Bind []Bind
 
 	AuthBasic *struct {
 		Login    string
@@ -322,6 +357,10 @@ const (
 
 var logger = log.Nop()
 
+func SetTemporaryLog(log log.Logger) {
+	logger = log
+}
+
 func parseExecType(val string) (ExecType, error) {
 	switch strings.ToLower(val) {
 	case "", "default":
@@ -333,6 +372,17 @@ func parseExecType(val string) (ExecType, error) {
 	return 0, fmt.Errorf("%w: invalid exec type: %s", ErrInvalidConfig, val)
 }
 
+func (e ExecType) String() string {
+	switch e {
+	case ExecTypeDefault:
+		return "exec"
+	case ExecTypeShellWrapper:
+		return "shell_wrapper"
+	default:
+		return fmt.Sprintf("unknown (%d)", e)
+	}
+}
+
 type Exec struct {
 	Mode ExecType `yaml:"type"`
 	Path string
@@ -340,6 +390,10 @@ type Exec struct {
 
 func (e Exec) String() string {
 	return fmt.Sprintf("Exec{Mode:%v Path:%s}", e.Mode, e.Path)
+}
+
+func (e ExecType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.String())
 }
 
 var _ fmt.Stringer = (*Exec)(nil)
@@ -402,10 +456,19 @@ func (m RawMethodDef) Validate() error {
 		aggregateArgs(v, definedArgs)
 	}
 
-	for k := range m.Params {
-		logger.Trace().Str("param", k).Send()
+	for paramName := range m.Params {
+		definedParams[paramName] = true
+		// NOTE(m): If 'default' is defined, but optional is false then
+		// set optional, but warn about change
+		param := m.Params[paramName]
+		if param.DefaultVal != nil && !param.Optional {
+			logger.Warn().
+				Str("name", paramName).
+				Msg("Has default value but not marked as optional. Marking as optional.")
 
-		definedParams[k] = true
+			param.Optional = true
+			m.Params[paramName] = param
+		}
 	}
 
 	for k := range definedArgs {
@@ -458,19 +521,20 @@ func listUsedVariables(nodesName []string) []string {
 }
 
 func (c *config) Load(paths ...string) error {
-	pathToVisit := new(stack)
+	pathToVisit := list.New()
 	for _, path := range paths {
-		pathToVisit.push(path)
+		pathToVisit.PushBack(path)
 	}
 
-	for pathToVisit.len() != 0 {
-		path := pathToVisit.pop()
+	for pathToVisit.Len() != 0 {
+		path := pathToVisit.Remove(pathToVisit.Front()).(string)
 		logger.Trace().Str("loading", path).Send()
 
 		bytes, e := os.Open(path)
 		if e != nil {
 			return e
 		}
+		defer bytes.Close()
 
 		var specialOne config
 
@@ -478,7 +542,7 @@ func (c *config) Load(paths ...string) error {
 		decoder.SetStrict(true)
 
 		if err := decoder.Decode(&specialOne); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", path, err)
 		}
 		// do we have any includes
 		for _, v := range specialOne.Include {
@@ -492,7 +556,7 @@ func (c *config) Load(paths ...string) error {
 
 			for _, f := range files {
 				klon := f
-				pathToVisit.push(klon)
+				pathToVisit.PushBack(klon)
 			}
 		}
 		// ensure default Mode parameter
@@ -532,7 +596,28 @@ func mergeProtocol(a *Protocol, b Protocol) {
 		a.AuthBasic = b.AuthBasic
 	}
 
-	a.Bind = append(a.Bind, b.Bind...)
+	aBindLen := len(a.Bind)
+	if aBindLen == 0 {
+		a.Bind = append(a.Bind, b.Bind...)
+
+		return
+	}
+
+	// add UNIQUE bind points
+	for aIndex := 0; aIndex < aBindLen; aIndex++ {
+		aBind := a.Bind[aIndex]
+
+		for bIndex := range b.Bind {
+			bBind := b.Bind[bIndex]
+			if aBind == bBind {
+				logger.Warn().Msg("duplicated bind point")
+
+				continue
+			}
+
+			a.Bind = append(a.Bind, bBind)
+		}
+	}
 }
 
 func mergeLog(a *LogDef, b LogDef) {

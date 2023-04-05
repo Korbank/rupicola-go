@@ -73,12 +73,11 @@ type rupicolaRPCContext struct {
 
 type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
-	bind   *Bind
-	mux    *http.ServeMux
+	bind   Bind
 	log    log.Logger
 }
 
-func (child *rupicolaProcessorChild) config() *Config {
+func (child *rupicolaProcessorChild) config() Config {
 	return child.parent.config
 }
 

@@ -91,7 +91,7 @@ func main() {
 	configuration.SetLogging()
 
 	registerCleanupAtExit(&configuration)
-	err = rupicola.ListenAndServe(&configuration)
+	err = rupicola.ListenAndServe(configuration)
 	logger.Error().Err(err).Msg("Program will shut down now due to encountered error")
 	os.Exit(1)
 }
