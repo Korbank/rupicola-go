@@ -3,6 +3,7 @@ package rupicolarpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,7 +15,7 @@ import (
 
 var Logger = log.Nop()
 
-// ContextKey : Supported keys in context
+// ContextKey : Supported keys in context.
 type ContextKey int
 
 var (
@@ -93,9 +94,9 @@ type oldToNewAdapter struct {
 func (o *oldToNewAdapter) Invoke(ctx context.Context, r JSONRPCRequest, out RPCResponser) {
 	re, e := o.Invoker.Invoke(ctx, r)
 	if e != nil {
-		out.SetResponseError(e)
+		_ = out.SetResponseError(e)
 	} else {
-		out.SetResponseResult(re)
+		_ = out.SetResponseResult(re)
 	}
 }
 
@@ -180,7 +181,7 @@ type JSONRpcResponse struct {
 	ID      interface{}    `json:"id,omitempty"`
 }
 
-// NewResult : Generate new Result response
+// NewResult : Generate new Result response.
 func NewResult(a interface{}, id interface{}) *JSONRpcResponse {
 	return NewResultEx(a, id, JSONRPCversion20)
 }
@@ -189,20 +190,19 @@ func NewResultEx(a, id interface{}, vers JSONRPCversion) *JSONRpcResponse {
 	return &JSONRpcResponse{vers, nil, a, id}
 }
 
-// NewErrorEx : Generate new Error response with custom version
+// NewErrorEx : Generate new Error response with custom version.
 func NewErrorEx(inputError error, requestID interface{}, vers JSONRPCversion) *JSONRpcResponse {
 	var errResponse *_Error
-	switch err := inputError.(type) {
-	case *_Error:
-		errResponse = err
-	default:
+
+	if !errors.As(inputError, &errResponse) {
 		Logger.Debug().Err(inputError).Msg("Should not happen - wrapping unknown error")
-		errResponse, _ = NewStandardErrorData(InternalError, err.Error()).(*_Error)
+		errResponse, _ = NewStandardErrorData(InternalError, inputError.Error()).(*_Error)
 	}
+
 	return &JSONRpcResponse{vers, errResponse, nil, requestID}
 }
 
-// NewError : Generate new error response with JsonRpcversion20
+// NewError : Generate new error response with JsonRpcversion20.
 func NewError(a error, id interface{}) *JSONRpcResponse {
 	return NewErrorEx(a, id, JSONRPCversion20)
 }
@@ -214,10 +214,13 @@ type _Error struct {
 	Data     interface{} `json:"data,omitempty"`
 }
 
-/*StandardErrorType error code
+/*
+StandardErrorType error code
 *code 	message 	meaning
 *-32700 	Parse error 	Invalid JSON was received by the server.
-						    An error occurred on the server while parsing the JSON text.
+
+	An error occurred on the server while parsing the JSON text.
+
 *-32600 	Invalid Request 	The JSON sent is not a valid Request object.
 *-32601 	Method not found 	The method does not exist / is not available.
 *-32602 	Invalid params 	Invalid method parameter(s).
@@ -227,36 +230,36 @@ type _Error struct {
 type StandardErrorType int
 
 const (
-	// ParseError code for parse error
+	// ParseError code for parse error.
 	ParseError StandardErrorType = -32700
-	// InvalidRequest code for invalid request
+	// InvalidRequest code for invalid request.
 	InvalidRequest = -32600
-	// MethodNotFound code for method not found
+	// MethodNotFound code for method not found.
 	MethodNotFound = -32601
-	// InvalidParams code for invalid params
+	// InvalidParams code for invalid params.
 	InvalidParams = -32602
-	// InternalError code for internal error
+	// InternalError code for internal error.
 	InternalError     = -32603
 	_ServerErrorStart = -32000
 	_ServerErrorEnd   = -32099
 )
 
 var (
-	// ErrParseError - Provided data is not JSON
+	// ErrParseError - Provided data is not JSON.
 	ErrParseError = NewStandardError(ParseError)
-	// ErrMethodNotFound - no such method
+	// ErrMethodNotFound - no such method.
 	ErrMethodNotFound = NewStandardError(MethodNotFound)
-	// ErrInvalidRequest - Request was invalid
+	// ErrInvalidRequest - Request was invalid.
 	ErrInvalidRequest = NewStandardError(InvalidRequest)
-	// ErrTimeout - Timeout during request processing
+	// ErrTimeout - Timeout during request processing.
 	ErrTimeout = NewServerError(-32099, "Timeout")
-	// ErrLimitExceed - Returned when response is too big
+	// ErrLimitExceed - Returned when response is too big.
 	ErrLimitExceed = NewServerError(-32098, "Limit Exceed")
-	// ErrBatchUnsupported - Returned when batch is disabled
+	// ErrBatchUnsupported - Returned when batch is disabled.
 	ErrBatchUnsupported = NewServerError(-32097, "Batch is disabled")
 )
 
-// NewServerError from code and message
+// NewServerError from code and message.
 func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
 		Logger.Panic().Int("code", code).Msg("Invalid code")
@@ -269,7 +272,7 @@ func NewServerError(code int, message string) error {
 	}
 }
 
-// NewStandardErrorData with code and custom data
+// NewStandardErrorData with code and custom data.
 func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	var theError _Error
 	theError.Code = int(code)
@@ -294,12 +297,12 @@ func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	return &theError
 }
 
-// NewStandardError from code
+// NewStandardError from code.
 func NewStandardError(code StandardErrorType) error {
 	return NewStandardErrorData(code, nil)
 }
 
-// Error is implementation of error interface
+// Error is implementation of error interface.
 func (e *_Error) Error() string {
 	if e.internal != nil {
 		return e.internal.Error()
@@ -322,7 +325,7 @@ func (m methodFunc) Invoke(ctx context.Context, in JSONRPCRequest) (interface{},
 	return m(in, ctx)
 }
 
-// LimitedWriter returns LimitExceed after reaching limit
+// LimitedWriter returns LimitExceed after reaching limit.
 type LimitedWriter interface {
 	io.Writer
 	SetLimit(int64)
@@ -333,10 +336,11 @@ type exceptionalLimitedWriter struct {
 }
 
 // ExceptionalLimitWrite construct from reader
-// Use <0 to limit it to "2^63-1" bytes (practicaly infinity)
+// Use <0 to limit it to "2^63-1" bytes (practically infinity).
 func ExceptionalLimitWrite(r io.Writer, n int64) LimitedWriter {
 	lw := &exceptionalLimitedWriter{R: r}
 	lw.SetLimit(n)
+
 	return lw
 }
 
@@ -348,7 +352,7 @@ func (r *exceptionalLimitedWriter) SetLimit(limit int64) {
 	}
 }
 
-// Write implement io.Writer
+// Write implement io.Writer.
 func (r *exceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 	if r.N <= 0 || int64(len(p)) > r.N {
 		return 0, ErrLimitExceed
@@ -356,6 +360,7 @@ func (r *exceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 
 	n, err = r.R.Write(p)
 	r.N -= int64(n)
+
 	return
 }
 
@@ -369,7 +374,7 @@ type JSONRPCProcessor struct {
 	limits  map[MethodType]*limits
 }
 
-// AddMethod add method
+// AddMethod add method.
 func (p *JSONRPCProcessor) AddMethod(name string, metype MethodType, action Invoker) *MethodDef {
 	return p.AddMethodNew(name, metype, &oldToNewAdapter{action})
 }
@@ -380,16 +385,18 @@ func (p *JSONRPCProcessor) AddMethodNew(name string, metype MethodType, action N
 		container = make(map[MethodType]*MethodDef)
 		p.methods[name] = container
 	}
+
 	method := &MethodDef{
 		Invoker: action,
 		// Each method will have copy of default values
 		limits: *p.limits[metype],
 	}
 	container[metype] = method
+
 	return method
 }
 
-// AddMethodFunc add method as func
+// AddMethodFunc add method as func.
 func (p *JSONRPCProcessor) AddMethodFunc(name string, metype MethodType, action methodFunc) *MethodDef {
 	return p.AddMethod(name, metype, action)
 }
@@ -402,7 +409,7 @@ func (p *JSONRPCProcessor) ExecutionTimeout(metype MethodType, timeout time.Dura
 	p.limits[metype].ExecTimeout = timeout
 }
 
-// NewJSONRPCProcessor create new json rpc processor
+// NewJSONRPCProcessor create new json rpc processor.
 func NewJSONRPCProcessor() JSONRPCProcessor {
 	copyRPCLimits := defaultRPCLimits
 	copyStreamingLimits := defaultStreamingLimits
@@ -418,8 +425,11 @@ func NewJSONRPCProcessor() JSONRPCProcessor {
 	}
 }
 
-func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
+func newResponser( //nolint:ireturn
+	out io.Writer, metype MethodType,
+) rpcResponserPriv {
 	var responser rpcResponserPriv
+
 	switch metype {
 	case RPCMethod:
 		responser = newRPCResponse(out)
@@ -431,31 +441,41 @@ func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
 		Logger.Panic().Str("type", metype.String()).Msg("Unknown method type")
 		panic("Unexpected method type")
 	}
+
 	return responser
 }
 
-func changeProtocolIfRequired(responser rpcResponserPriv, request *requestData) rpcResponserPriv {
-	if request.Jsonrpc == JSONRPCversion20s {
-		switch responser.(type) {
-		case *legacyStreamingResponse:
-			Logger.Info().Msg("Upgrading streaming protocol")
-			return newResponser(responser.Writer(), StreamingMethod)
-		}
+func changeProtocolIfRequired( //nolint:ireturn
+	responser rpcResponserPriv, request *requestData,
+) rpcResponserPriv {
+	if request.Jsonrpc != JSONRPCversion20s {
+		return responser
 	}
-	return responser
+
+	_, ok := responser.(*legacyStreamingResponse)
+	if !ok {
+		return responser
+	}
+
+	Logger.Info().Msg("Upgrading streaming protocol")
+
+	return newResponser(responser.Writer(), StreamingMethod)
 }
 
-// ReadFrom implements io.Reader
+// ReadFrom implements io.Reader.
 func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 	decoder := json.NewDecoder(re)
 
 	err = decoder.Decode(r)
 	if err != nil {
-		switch err.(type) {
-		case *json.UnmarshalTypeError:
+		var jsonErr *json.UnmarshalTypeError
+
+		var ourErr *_Error
+
+		if errors.As(err, &jsonErr) {
 			err = ErrInvalidRequest
-		case *_Error: // do nothing
-		default:
+		} else if !errors.As(err, &ourErr) {
+			// if this is not 'ours' error then return generic ParseError
 			err = ErrParseError
 		}
 	} else if decoder.More() {
@@ -464,6 +484,7 @@ func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 	}
 
 	n = 0
+
 	return
 }
 
@@ -498,7 +519,9 @@ func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
 	_, f.err = f.requestData.ReadFrom(r)
 	f.log = Logger.With().Str("method", f.Method()).Logger()
+
 	r.Close()
+
 	return f.err
 }
 
@@ -509,14 +532,17 @@ func (f *jsonRPCrequestPriv) ensureProtocol() {
 func (f *jsonRPCrequestPriv) Close() error {
 	// this is noop if we already upgraded
 	f.ensureProtocol()
+
 	if f.err != nil {
 		// For errors we ALWAYS disable payload limits
 		f.rpcResponserPriv.MaxResponse(0)
 		// we ended with errors somewhere
 		f.rpcResponserPriv.SetResponseError(f.err)
 		f.rpcResponserPriv.Close()
+
 		return f.err
 	}
+
 	return f.rpcResponserPriv.Close()
 }
 
@@ -531,6 +557,7 @@ func (f *jsonRPCrequestPriv) process(ctx context.Context) error {
 
 	if !f.isValid() {
 		f.err = ErrInvalidRequest
+
 		return f.err
 	}
 
@@ -590,15 +617,16 @@ func (f *jsonRPCrequestPriv) process(ctx context.Context) error {
 		// This is just to ensure we won't hang forever if procedure
 		// is misbehaving
 		case <-time.NewTimer(time.Millisecond * 500).C:
-			f.log.Warn().Msg("procedure didn't exit gracefuly, forcing exit")
+			f.log.Warn().Msg("procedure didn't exit gracefully, forcing exit")
 		case <-f.done:
 		}
 	}
+
 	return f.err
 }
 
 // SetResponseError saves passed error
-// should have context
+// should have context.
 func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 	if f.err != nil {
 		f.log.Warn().Err(errs).Msg("trying to set error after deadline")
@@ -609,11 +637,12 @@ func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 			f.log.Warn().Err(err).Msg("error while setting error response")
 		}
 	}
+
 	return f.err
 }
 
 // SetResponseResult handle Reader case
-// should have context
+// should have context.
 func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	if f.err != nil {
 		f.log.Warn().Msg("trying to set result after deadline")
@@ -659,15 +688,16 @@ func (p *JSONRPCProcessor) spawnRequest(request RequestDefinition, response io.W
 		done:             make(chan struct{}),
 		p:                p,
 	}
+
 	return jsonRequest
 }
 
-// limit for given type
+// limit for given type.
 func (p *JSONRPCProcessor) limit(metype MethodType) limits {
 	return *p.limits[metype]
 }
 
-// method for given name
+// method for given name.
 func (p *JSONRPCProcessor) method(name string, metype MethodType) (*MethodDef, error) {
 	// check if method with given name exists
 	method, okm := p.methods[name]
@@ -692,10 +722,11 @@ func (p *JSONRPCProcessor) method(name string, metype MethodType) (*MethodDef, e
 
 		return nil, ErrMethodNotFound
 	}
+
 	return selectedMethod, nil
 }
 
-// ProcessContext : Parse and process request from data
+// ProcessContext : Parse and process request from data.
 func (p *JSONRPCProcessor) ProcessContext(kontext context.Context,
 	request RequestDefinition, response io.Writer,
 ) error {
