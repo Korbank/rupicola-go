@@ -417,8 +417,19 @@ func (m RawMethodDef) Validate() error {
 		aggregateArgs(v, definedArgs)
 	}
 
-	for k := range m.Params {
-		definedParams[k] = true
+	for paramName := range m.Params {
+		definedParams[paramName] = true
+		// NOTE(m): If 'default' is defined, but optional is false then
+		// set optional, but warn about change
+		param := m.Params[paramName]
+		if param.DefaultVal != nil && !param.Optional {
+			logger.Warn().
+				Str("name", paramName).
+				Msg("Has default value but not marked as optional. Marking as optional.")
+
+			param.Optional = true
+			m.Params[paramName] = param
+		}
 	}
 
 	for k := range definedArgs {
