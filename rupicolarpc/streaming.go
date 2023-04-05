@@ -71,10 +71,105 @@ func (b *streamingResponse) SetID(id *interface{}) {
 	b.id = id
 }
 
-func (b *streamingResponse) Write(p []byte) (n int, err error) {
+type streamingChunk struct {
+	Data interface{}  `json:"data"`
+	ID   *interface{} `json:"id,omitempty"`
+}
+
+func (b *streamingResponse) handleLineChunks(p []byte, resp streamingChunk) (int, error) {
+	var n int
+
+	result := bytes.SplitAfter(p, []byte("\n"))
+	for _, line := range result {
+		lenv := len(line)
+
+		if lenv == 0 {
+			// Well looks like this can happen
+			continue
+		}
+
+		if line[lenv-1] == '\n' {
+			lineWithoutEnding := line[:len(line)-1]
+			// special case with dangling data in buffer
+			if b.buffer.Len() != 0 {
+				_, err := b.buffer.Write(lineWithoutEnding)
+				if err != nil {
+					return n, err
+				}
+				// assign buffer bytes as source
+				lineWithoutEnding = b.buffer.Bytes()
+				b.buffer.Reset()
+			}
+
+			resp.Data = string(lineWithoutEnding)
+
+			if err := b.encoder.Encode(resp); err != nil {
+				return n, err
+			}
+
+			n += lenv
+		} else {
+			// Oh dang! We get some leftovers...
+			npart, err := b.buffer.Write(line)
+			if err != nil {
+				return n, err
+			}
+			n += npart
+		}
+	}
+
+	return n, nil
+}
+
+func (b *streamingResponse) handleChunks(p []byte, resp streamingChunk) (int, error) {
+	var npart int
+	var err error
+	var n int
+
+	missingBytes := (b.chunkSize - b.buffer.Len()) % b.chunkSize
+	if missingBytes != b.chunkSize {
+		npart, err = b.buffer.Write(p[0:missingBytes])
+		if err != nil {
+			return n, err
+		}
+
+		n += npart
+
+		err = b.commit()
+		if err != nil {
+			return n, err
+		}
+	}
+
+	chunk := missingBytes
+	for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
+		resp.Data = p[chunk : chunk+b.chunkSize]
+		n += b.chunkSize
+
+		if err = b.encoder.Encode(resp); err != nil {
+			return n, err
+		}
+	}
+
+	var lastN int
+
+	lastN, err = b.buffer.Write(p[chunk:])
+	if err != nil {
+		return n, err
+	}
+
+	n += lastN
+
+	return n, err
+}
+
+func (b *streamingResponse) Write(p []byte) (int, error) {
 	if b.isClosed {
 		return 0, io.EOF
 	}
+
+	var n int
+	var err error
 
 	n = 0
 
@@ -89,111 +184,32 @@ func (b *streamingResponse) Write(p []byte) (n int, err error) {
 		b.firstWrite = false
 
 		if err != nil {
-			return
+			return n, err
 		}
 	}
 
-	var resp struct {
-		Data interface{}  `json:"data"`
-		ID   *interface{} `json:"id,omitempty"`
+	resp := streamingChunk{
+		Data: nil,
+		ID:   b.id,
 	}
 
-	resp.ID = b.id
-
-	// TODO: Can we do better?
 	if b.chunkSize <= 0 {
-		var npart int
-
-		result := bytes.SplitAfter(p, []byte("\n"))
-		for _, line := range result {
-			lenv := len(line)
-
-			if lenv == 0 {
-				// Well looks like this can happen
-				continue
-			}
-
-			if line[lenv-1] == '\n' {
-				lineWithoutEnding := line[:len(line)-1]
-				// special case with dangling data in buffer
-				if b.buffer.Len() != 0 {
-					_, err = b.buffer.Write(lineWithoutEnding)
-					if err != nil {
-						return
-					}
-					// assign buffer bytes as source
-					lineWithoutEnding = b.buffer.Bytes()
-					b.buffer.Reset()
-				}
-
-				resp.Data = string(lineWithoutEnding)
-
-				err = b.encoder.Encode(resp)
-				if err != nil {
-					return
-				}
-
-				n += lenv
-			} else {
-				// Oh dang! We get some leftovers...
-				npart, err = b.buffer.Write(line)
-				if err != nil {
-					return n, err
-				}
-				n += npart
-			}
-		}
-
-		return
+		return b.handleLineChunks(p, resp)
 	}
+
 	if len(p)+b.buffer.Len() >= b.chunkSize {
-		var npart int
-
-		missingBytes := (b.chunkSize - b.buffer.Len()) % b.chunkSize
-		if missingBytes != b.chunkSize {
-			npart, err = b.buffer.Write(p[0:missingBytes])
-			if err != nil {
-				return n, err
-			}
-
-			n += npart
-
-			err = b.commit()
-			if err != nil {
-				return
-			}
-		}
-
-		chunk := missingBytes
-		for ; chunk+b.chunkSize < len(p); chunk += b.chunkSize {
-			resp.Data = p[chunk : chunk+b.chunkSize]
-			n += b.chunkSize
-
-			if err = b.encoder.Encode(resp); err != nil {
-				return
-			}
-		}
-
-		var lastN int
-
-		lastN, err = b.buffer.Write(p[chunk:])
-		if err != nil {
-			return
-		}
-
-		n += lastN
-
-		return
+		return b.handleChunks(p, resp)
 	}
 
+	// TODO: it was typo, and should return erro and not err?
 	npart, erro := b.buffer.Write(p)
 	if erro != nil {
-		return
+		return n, err
 	}
 
 	n += npart
 
-	return
+	return n, err
 }
 
 func (b *streamingResponse) SetResponseError(respErr error) (err error) {
