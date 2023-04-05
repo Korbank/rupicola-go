@@ -74,7 +74,6 @@ type rupicolaRPCContext struct {
 type rupicolaProcessorChild struct {
 	parent *rupicolaProcessor
 	bind   Bind
-	mux    *http.ServeMux
 	log    log.Logger
 }
 

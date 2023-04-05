@@ -59,19 +59,20 @@ func newRupicolaProcessorFromConfig(conf Config) *rupicolaProcessor {
 }
 
 // Create separate context for given bind point (required for concurrent listening)
-func (proc *rupicolaProcessor) spawnChild(bind config.Bind) *rupicolaProcessorChild {
-	child := &rupicolaProcessorChild{
+func (proc *rupicolaProcessor) spawnChild(bind config.Bind) rupicolaProcessorChild {
+	child := rupicolaProcessorChild{
 		parent: proc,
 		bind:   Bind(bind),
-		mux:    http.NewServeMux(),
 		log:    Logger.With().Str("bindpoint", bind.Address).Logger(),
 	}
-	child.mux.Handle(proc.config.Protocol.URI.RPC, child)
-	child.mux.Handle(proc.config.Protocol.URI.Streamed, child)
 	return child
 }
 
 // Start listening (this exits only on failure)
 func (child *rupicolaProcessorChild) listen() error {
-	return child.bind.Bind(child.mux, child.parent.config.Limits)
+	mux := http.NewServeMux()
+	cfg := child.config()
+	mux.Handle(cfg.Protocol.URI.RPC, child)
+	mux.Handle(cfg.Protocol.URI.Streamed, child)
+	return child.bind.Bind(mux, cfg.Limits)
 }
