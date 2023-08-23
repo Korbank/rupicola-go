@@ -13,7 +13,7 @@ import (
 	"time"
 
 	log "github.com/rs/zerolog"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type config = Config
@@ -539,7 +539,7 @@ func (c *config) Load(paths ...string) error {
 		var specialOne config
 
 		decoder := yaml.NewDecoder(bytes)
-		decoder.SetStrict(true)
+		decoder.KnownFields(true)
 
 		if err := decoder.Decode(&specialOne); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
