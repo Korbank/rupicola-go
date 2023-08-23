@@ -1,6 +1,6 @@
 github.com/coreos/go-systemd v0.0.0-20190321100706-95778dfbb74e/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
-github.com/felixge/tcpkeepalive v0.0.0-20160804073959-5bb0b2dea91e h1:mVIjvOd7NckIwf9J4hLB2YWXBYjhREF4vBeZXZ8mrWM=
-github.com/felixge/tcpkeepalive v0.0.0-20160804073959-5bb0b2dea91e/go.mod h1:z0yk3Pix6k848RFizhkU4uY36ts5pB1t3toBwudGbBo=
+github.com/felixge/tcpkeepalive v0.0.0-20220224101934-f56176a53a1b h1:h2X1tswmsRG8D1eeDgkf18NYsQkmxK1G6P4uL3QZGIc=
+github.com/felixge/tcpkeepalive v0.0.0-20220224101934-f56176a53a1b/go.mod h1:z0yk3Pix6k848RFizhkU4uY36ts5pB1t3toBwudGbBo=
 github.com/mkocot/pwhash v0.0.0-20181111195659-5b43ed96d448 h1:l0mcIlTLsYbpP2eX3n4RECg1O/KuwrDOjl1OrFgh8Ts=
 github.com/mkocot/pwhash v0.0.0-20181111195659-5b43ed96d448/go.mod h1:tg9hklGnr3VBRnIPCWZWqXYAJKYUeLgVPRbYRXkfou0=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=

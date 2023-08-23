@@ -1,4 +1,4 @@
-# github.com/felixge/tcpkeepalive v0.0.0-20160804073959-5bb0b2dea91e
+# github.com/felixge/tcpkeepalive v0.0.0-20220224101934-f56176a53a1b
 ## explicit
 github.com/felixge/tcpkeepalive
 # github.com/mkocot/pwhash v0.0.0-20181111195659-5b43ed96d448
