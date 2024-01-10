@@ -155,13 +155,14 @@ Construction for method definition is as follow:
 ```yaml
 method-name:
     private: boolean (default: false)
-    include_stderr: boolean (default: false)
-    streamed: boolean
+    include-stderr: boolean (default: false)
+    streamed: boolean (default: false)
     encoding: utf-8 | base64 (default: utf-8)
     params: (default: nil)
         parameter_name:
             type: string | number | bool
             optional: boolean (default: false)
+	    default: string | number | bool | (default: nil)
     invoke:
         exec: string
         args: (default: nil)

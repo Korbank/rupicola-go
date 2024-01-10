@@ -7,14 +7,11 @@ import (
 	"io"
 )
 
-var (
-	nilInterface = interface{}(nil)
-)
-var (
-	errResultAlreadySet = errors.New("Result already set")
-)
+var nilInterface = interface{}(nil)
 
-// RPCResponser handles returning results
+var errResultAlreadySet = errors.New("result already set")
+
+// RPCResponser handles returning results.
 type RPCResponser interface {
 	SetResponseResult(interface{}) error
 	SetResponseError(error) error
@@ -40,13 +37,13 @@ type baseResponse struct {
 	id        *interface{}
 }
 
-func newBaseResponse(t io.Writer, l LimitedWriter) baseResponse {
+func newBaseResponse(t io.Writer, writer LimitedWriter) baseResponse {
 	return baseResponse{
 		transport: t,
-		limiter:   l,
+		limiter:   writer,
 		resultSet: false,
 		id:        &nilInterface, // this will ensure we will send data on errors
-		encoder:   json.NewEncoder(l),
+		encoder:   json.NewEncoder(writer),
 	}
 }
 
@@ -62,6 +59,7 @@ func (b *baseResponse) Writer() io.Writer {
 
 func (b *baseResponse) Close() error {
 	Logger.Debug().Msg("using default empty Close method for response")
+
 	return nil
 }
 
@@ -71,11 +69,13 @@ func (b *baseResponse) Write(p []byte) (int, error) {
 
 func (b *baseResponse) SetResponseError(e error) error {
 	Logger.Debug().Err(e).Msg("SetResponseError unused for Legacy streaming")
+
 	return nil
 }
 
 func (b *baseResponse) SetResponseResult(result interface{}) (err error) {
 	Logger.Error().Str("result", fmt.Sprintf("%v", result)).Msg("Unknown input result")
+
 	return
 }
 
@@ -90,5 +90,6 @@ func (b *baseResponse) SetID(id *interface{}) {
 	if b.id != &nilInterface {
 		Logger.Warn().Msg("SetID invoked twice")
 	}
+
 	b.id = id
 }
