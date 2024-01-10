@@ -3,6 +3,7 @@ package rupicolarpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,7 +15,7 @@ import (
 
 var Logger = log.Nop()
 
-// ContextKey : Supported keys in context
+// ContextKey : Supported keys in context.
 type ContextKey int
 
 var (
@@ -22,25 +23,26 @@ var (
 	defaultStreamingLimits = limits{0, 0}
 )
 
-type JsonRPCversion string
+type JSONRPCversion string
 
-var (
-	JsonRPCversion20  JsonRPCversion = "2.0"
-	JsonRPCversion20s                = JsonRPCversion20 + "+s"
+const (
+	JSONRPCversion20  JSONRPCversion = "2.0"
+	JSONRPCversion20s                = JSONRPCversion20 + "+s"
 )
 
-// MethodType : Supported or requested method response format
+// MethodType : Supported or requested method response format.
 type MethodType int
 
 const (
-	// RPCMethod : Json RPC 2.0
+	// RPCMethod : Json RPC 2.0.
 	RPCMethod MethodType = 1
 	// StreamingMethodLegacy : Basic streaming format without header or footer. Can be base64 encoded.
 	StreamingMethodLegacy MethodType = 2
-	// StreamingMethod : Line JSON encoding with header and footer
+	// StreamingMethod : Line JSON encoding with header and footer.
 	StreamingMethod MethodType = 4
 	unknownMethod   MethodType = 0
 )
+
 const (
 	forcedFlushTimeout = time.Second * 10
 )
@@ -53,22 +55,24 @@ func (me MethodType) String() string {
 		return "Streaming"
 	case StreamingMethodLegacy:
 		return "Streaming (legacy)"
+	case unknownMethod:
+		fallthrough
 	default:
 		return fmt.Sprintf("unknown(%d)", me)
 	}
 }
 
-// Invoker is interface for method invoked by rpc server
+// Invoker is interface for method invoked by rpc server.
 type Invoker interface {
-	Invoke(context.Context, JsonRpcRequest) (interface{}, error)
+	Invoke(context.Context, JSONRPCRequest) (interface{}, error)
 }
 
-// This have more sense
+// This have more sense.
 type NewInvoker interface {
-	Invoke(context.Context, JsonRpcRequest, RPCResponser)
+	Invoke(context.Context, JSONRPCRequest, RPCResponser)
 }
 
-// UserData is user provided custom data passed to invocation
+// UserData is user provided custom data passed to invocation.
 type UserData interface{}
 
 // RequestDefinition ...
@@ -77,7 +81,8 @@ type RequestDefinition interface {
 	OutputMode() MethodType
 	UserData() UserData
 }
-type methodDef struct {
+
+type MethodDef struct {
 	Invoker NewInvoker
 	limits
 }
@@ -86,29 +91,29 @@ type oldToNewAdapter struct {
 	Invoker
 }
 
-func (o *oldToNewAdapter) Invoke(ctx context.Context, r JsonRpcRequest, out RPCResponser) {
+func (o *oldToNewAdapter) Invoke(ctx context.Context, r JSONRPCRequest, out RPCResponser) {
 	re, e := o.Invoker.Invoke(ctx, r)
 	if e != nil {
-		out.SetResponseError(e)
+		_ = out.SetResponseError(e)
 	} else {
-		out.SetResponseResult(re)
+		_ = out.SetResponseResult(re)
 	}
 }
 
 // Execution timmeout change maximum allowed execution time
-// 0 = unlimited
-func (m *methodDef) ExecutionTimeout(timeout time.Duration) {
+// 0 = unlimited.
+func (m *MethodDef) ExecutionTimeout(timeout time.Duration) {
 	m.ExecTimeout = timeout
 }
 
 // MaxSize sets maximum response size in bytes. 0 = unlimited
 // Note this excludes JSON wrapping and count final encoding
-// eg. size after base64 encoding
-func (m *methodDef) MaxSize(size uint) {
+// eg. size after base64 encoding.
+func (m *MethodDef) MaxSize(size uint) {
 	m.MaxResponse = size
 }
 
-func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest, out RPCResponser) {
+func (m *MethodDef) Invoke(c context.Context, r JSONRPCRequest, out RPCResponser) {
 	m.Invoker.Invoke(c, r, out)
 }
 
@@ -117,9 +122,9 @@ func (m *methodDef) Invoke(c context.Context, r JsonRpcRequest, out RPCResponser
 // convert them to string anyway...
 type jsonRPCRequestOptions map[string]interface{}
 
-// JsonRpcRequest ... Just POCO
+// JsonRpcRequest ... Just POCO.
 type requestData struct {
-	Jsonrpc JsonRPCversion
+	Jsonrpc JSONRPCversion
 	Method  string
 	Params  jsonRPCRequestOptions
 	// can be any json valid type (including null)
@@ -127,19 +132,20 @@ type requestData struct {
 	ID *interface{}
 }
 
-type JsonRpcRequest interface {
+type JSONRPCRequest interface {
 	Method() string
-	Version() JsonRPCversion
+	Version() JSONRPCversion
 	UserData() UserData
 	Params() jsonRPCRequestOptions
 }
 
-// UnmarshalJSON is custom unmarshal for JsonRpcRequestOptions
+// UnmarshalJSON is custom unmarshal for JsonRpcRequestOptions.
 func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
-	//todo: discard objects?
+	// todo: discard objects?
 	var everything interface{}
 
 	var unified map[string]interface{}
+
 	if err := json.Unmarshal(data, &everything); err != nil {
 		return err
 	}
@@ -151,53 +157,54 @@ func (w *jsonRPCRequestOptions) UnmarshalJSON(data []byte) error {
 		unified = make(map[string]interface{}, len(converted))
 		for i, v := range converted {
 			// Count arguments from 1 to N
-			unified[strconv.Itoa(i+1)] = v //fmt.Sprint(v)
+			unified[strconv.Itoa(i+1)] = v // fmt.Sprint(v)
 		}
 	default:
 		Logger.Warn().Str("received", fmt.Sprintf("%+v", converted)).Msg("invalid 'param' type only map or struct")
+
 		return NewStandardError(InvalidRequest)
 	}
-	*w = unified
-	return nil
 
+	*w = unified
+
+	return nil
 }
 
 func (r *requestData) isValid() bool {
-	return (r.Jsonrpc == JsonRPCversion20 || r.Jsonrpc == JsonRPCversion20s) && r.Method != ""
+	return (r.Jsonrpc == JSONRPCversion20 || r.Jsonrpc == JSONRPCversion20s) && r.Method != ""
 }
 
-type JsonRpcResponse struct {
-	Jsonrpc JsonRPCversion `json:"jsonrpc"`
+type JSONRpcResponse struct {
+	Jsonrpc JSONRPCversion `json:"jsonrpc"`
 	Error   *_Error        `json:"error,omitempty"`
 	Result  interface{}    `json:"result,omitempty"`
 	ID      interface{}    `json:"id,omitempty"`
 }
 
-// NewResult : Generate new Result response
-func NewResult(a interface{}, id interface{}) *JsonRpcResponse {
-	return NewResultEx(a, id, JsonRPCversion20)
+// NewResult : Generate new Result response.
+func NewResult(a interface{}, id interface{}) *JSONRpcResponse {
+	return NewResultEx(a, id, JSONRPCversion20)
 }
 
-func NewResultEx(a, id interface{}, vers JsonRPCversion) *JsonRpcResponse {
-	return &JsonRpcResponse{vers, nil, a, id}
+func NewResultEx(a, id interface{}, vers JSONRPCversion) *JSONRpcResponse {
+	return &JSONRpcResponse{vers, nil, a, id}
 }
 
-// NewErrorEx : Generate new Error response with custom version
-func NewErrorEx(a error, id interface{}, vers JsonRPCversion) *JsonRpcResponse {
-	var b *_Error
-	switch err := a.(type) {
-	case *_Error:
-		b = err
-	default:
-		Logger.Debug().Err(a).Msg("Should not happen - wrapping unknown error")
-		b, _ = NewStandardErrorData(InternalError, err.Error()).(*_Error)
+// NewErrorEx : Generate new Error response with custom version.
+func NewErrorEx(inputError error, requestID interface{}, vers JSONRPCversion) *JSONRpcResponse {
+	var errResponse *_Error
+
+	if !errors.As(inputError, &errResponse) {
+		Logger.Debug().Err(inputError).Msg("Should not happen - wrapping unknown error")
+		errResponse, _ = NewStandardErrorData(InternalError, inputError.Error()).(*_Error)
 	}
-	return &JsonRpcResponse{vers, b, nil, id}
+
+	return &JSONRpcResponse{vers, errResponse, nil, requestID}
 }
 
-// NewError : Generate new error response with JsonRpcversion20
-func NewError(a error, id interface{}) *JsonRpcResponse {
-	return NewErrorEx(a, id, JsonRPCversion20)
+// NewError : Generate new error response with JsonRpcversion20.
+func NewError(a error, id interface{}) *JSONRpcResponse {
+	return NewErrorEx(a, id, JSONRPCversion20)
 }
 
 type _Error struct {
@@ -207,64 +214,70 @@ type _Error struct {
 	Data     interface{} `json:"data,omitempty"`
 }
 
-/*StandardErrorType error code
+/*
+StandardErrorType error code
 *code 	message 	meaning
-*-32700 	Parse error 	Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
+*-32700 	Parse error 	Invalid JSON was received by the server.
+
+	An error occurred on the server while parsing the JSON text.
+
 *-32600 	Invalid Request 	The JSON sent is not a valid Request object.
 *-32601 	Method not found 	The method does not exist / is not available.
 *-32602 	Invalid params 	Invalid method parameter(s).
 *-32603 	Internal error 	Internal JSON-RPC error.
 *-32000 to -32099 	Server error 	Reserved for implementation-defined server-errors.
- */
+*/
 type StandardErrorType int
 
 const (
-	// ParseError code for parse error
+	// ParseError code for parse error.
 	ParseError StandardErrorType = -32700
-	// InvalidRequest code for invalid request
+	// InvalidRequest code for invalid request.
 	InvalidRequest = -32600
-	// MethodNotFound code for method not found
+	// MethodNotFound code for method not found.
 	MethodNotFound = -32601
-	// InvalidParams code for invalid params
+	// InvalidParams code for invalid params.
 	InvalidParams = -32602
-	// InternalError code for internal error
+	// InternalError code for internal error.
 	InternalError     = -32603
 	_ServerErrorStart = -32000
 	_ServerErrorEnd   = -32099
 )
 
 var (
-	// ErrParseError - Provided data is not JSON
+	// ErrParseError - Provided data is not JSON.
 	ErrParseError = NewStandardError(ParseError)
-	// ErrMethodNotFound - no such method
+	// ErrMethodNotFound - no such method.
 	ErrMethodNotFound = NewStandardError(MethodNotFound)
-	// ErrInvalidRequest - Request was invalid
+	// ErrInvalidRequest - Request was invalid.
 	ErrInvalidRequest = NewStandardError(InvalidRequest)
-	// ErrTimeout - Timeout during request processing
+	// ErrTimeout - Timeout during request processing.
 	ErrTimeout = NewServerError(-32099, "Timeout")
-	// ErrLimitExceed - Returned when response is too big
+	// ErrLimitExceed - Returned when response is too big.
 	ErrLimitExceed = NewServerError(-32098, "Limit Exceed")
-	// ErrBatchUnsupported - Returned when batch is disabled
+	// ErrBatchUnsupported - Returned when batch is disabled.
 	ErrBatchUnsupported = NewServerError(-32097, "Batch is disabled")
 )
 
-// NewServerError from code and message
+// NewServerError from code and message.
 func NewServerError(code int, message string) error {
 	if code > int(_ServerErrorStart) || code < int(_ServerErrorEnd) {
 		Logger.Panic().Int("code", code).Msg("Invalid code")
-		panic("invlid code")
+		panic("invalid code")
 	}
-	var theError _Error
-	theError.Code = code
-	theError.Message = message
-	return &theError
+
+	return &_Error{
+		Code:    code,
+		Message: message,
+	}
 }
 
-// NewStandardErrorData with code and custom data
+// NewStandardErrorData with code and custom data.
 func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 	var theError _Error
 	theError.Code = int(code)
 	theError.Data = data
+
 	switch code {
 	case ParseError:
 		theError.Message = "Parse error"
@@ -280,35 +293,39 @@ func NewStandardErrorData(code StandardErrorType, data interface{}) error {
 		Logger.Panic().Msg("WTF")
 		panic("WTF")
 	}
+
 	return &theError
 }
 
-// NewStandardError from code
+// NewStandardError from code.
 func NewStandardError(code StandardErrorType) error {
 	return NewStandardErrorData(code, nil)
 }
 
-// Error is implementation of error interface
+// Error is implementation of error interface.
 func (e *_Error) Error() string {
 	if e.internal != nil {
 		return e.internal.Error()
 	}
+
 	return e.Message
 }
 func (e *_Error) Internal() error { return e.internal }
 
-type methodFunc func(in JsonRpcRequest, ctx interface{}) (interface{}, error)
-type newMethodFunc func(in JsonRpcRequest, ctx interface{}, out RPCResponser)
+type (
+	methodFunc    func(in JSONRPCRequest, ctx interface{}) (interface{}, error)
+	newMethodFunc func(in JSONRPCRequest, ctx interface{}, out RPCResponser)
+)
 
-func (m newMethodFunc) Invoke(ctx context.Context, in JsonRpcRequest, out RPCResponser) {
+func (m newMethodFunc) Invoke(ctx context.Context, in JSONRPCRequest, out RPCResponser) {
 	m(in, ctx, out)
 }
 
-func (m methodFunc) Invoke(ctx context.Context, in JsonRpcRequest) (interface{}, error) {
+func (m methodFunc) Invoke(ctx context.Context, in JSONRPCRequest) (interface{}, error) {
 	return m(in, ctx)
 }
 
-// LimitedWriter returns LimitExceed after reaching limit
+// LimitedWriter returns LimitExceed after reaching limit.
 type LimitedWriter interface {
 	io.Writer
 	SetLimit(int64)
@@ -319,10 +336,11 @@ type exceptionalLimitedWriter struct {
 }
 
 // ExceptionalLimitWrite construct from reader
-// Use <0 to limit it to "2^63-1" bytes (practicaly infinity)
+// Use <0 to limit it to "2^63-1" bytes (practically infinity).
 func ExceptionalLimitWrite(r io.Writer, n int64) LimitedWriter {
 	lw := &exceptionalLimitedWriter{R: r}
 	lw.SetLimit(n)
+
 	return lw
 }
 
@@ -334,7 +352,7 @@ func (r *exceptionalLimitedWriter) SetLimit(limit int64) {
 	}
 }
 
-// Write implement io.Writer
+// Write implement io.Writer.
 func (r *exceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 	if r.N <= 0 || int64(len(p)) > r.N {
 		return 0, ErrLimitExceed
@@ -342,6 +360,7 @@ func (r *exceptionalLimitedWriter) Write(p []byte) (n int, err error) {
 
 	n, err = r.R.Write(p)
 	r.N -= int64(n)
+
 	return
 }
 
@@ -350,67 +369,54 @@ type limits struct {
 	MaxResponse uint
 }
 
-type JsonRpcProcessor interface {
-	AddMethod(name string, metype MethodType, action Invoker) *methodDef
-	AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef
-	AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef
-	AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef
-	ProcessContext(ctx context.Context, request RequestDefinition, response io.Writer) error
-	ExecutionTimeout(metype MethodType, timeout time.Duration)
-}
-
-type jsonRpcProcessorPriv interface {
-	JsonRpcProcessor
-	limit(MethodType) limits
-	method(string, MethodType) (*methodDef, error)
-}
-
-type jsonRpcProcessor struct {
-	methods map[string]map[MethodType]*methodDef
+type JSONRPCProcessor struct {
+	methods map[string]map[MethodType]*MethodDef
 	limits  map[MethodType]*limits
 }
 
-// AddMethod add method
-func (p *jsonRpcProcessor) AddMethod(name string, metype MethodType, action Invoker) *methodDef {
+// AddMethod add method.
+func (p *JSONRPCProcessor) AddMethod(name string, metype MethodType, action Invoker) *MethodDef {
 	return p.AddMethodNew(name, metype, &oldToNewAdapter{action})
 }
 
-func (p *jsonRpcProcessor) AddMethodNew(name string, metype MethodType, action NewInvoker) *methodDef {
+func (p *JSONRPCProcessor) AddMethodNew(name string, metype MethodType, action NewInvoker) *MethodDef {
 	container, ok := p.methods[name]
 	if !ok {
-		container = make(map[MethodType]*methodDef)
+		container = make(map[MethodType]*MethodDef)
 		p.methods[name] = container
 	}
-	method := &methodDef{
+
+	method := &MethodDef{
 		Invoker: action,
 		// Each method will have copy of default values
 		limits: *p.limits[metype],
 	}
 	container[metype] = method
+
 	return method
 }
 
-// AddMethodFunc add method as func
-func (p *jsonRpcProcessor) AddMethodFunc(name string, metype MethodType, action methodFunc) *methodDef {
+// AddMethodFunc add method as func.
+func (p *JSONRPCProcessor) AddMethodFunc(name string, metype MethodType, action methodFunc) *MethodDef {
 	return p.AddMethod(name, metype, action)
 }
 
-func (p *jsonRpcProcessor) AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *methodDef {
+func (p *JSONRPCProcessor) AddMethodFuncNew(name string, metype MethodType, action newMethodFunc) *MethodDef {
 	return p.AddMethodNew(name, metype, action)
 }
 
-func (p *jsonRpcProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
+func (p *JSONRPCProcessor) ExecutionTimeout(metype MethodType, timeout time.Duration) {
 	p.limits[metype].ExecTimeout = timeout
 }
 
-// NewJsonRpcProcessor create new json rpc processor
-func NewJsonRpcProcessor() JsonRpcProcessor {
+// NewJSONRPCProcessor create new json rpc processor.
+func NewJSONRPCProcessor() JSONRPCProcessor {
 	copyRPCLimits := defaultRPCLimits
 	copyStreamingLimits := defaultStreamingLimits
 	copyStreamingLegacyLimits := defaultStreamingLimits
 
-	return &jsonRpcProcessor{
-		methods: make(map[string]map[MethodType]*methodDef),
+	return JSONRPCProcessor{
+		methods: make(map[string]map[MethodType]*MethodDef),
 		limits: map[MethodType]*limits{
 			RPCMethod:             &copyRPCLimits,
 			StreamingMethod:       &copyStreamingLimits,
@@ -419,8 +425,11 @@ func NewJsonRpcProcessor() JsonRpcProcessor {
 	}
 }
 
-func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
+func newResponser( //nolint:ireturn
+	out io.Writer, metype MethodType,
+) rpcResponserPriv {
 	var responser rpcResponserPriv
+
 	switch metype {
 	case RPCMethod:
 		responser = newRPCResponse(out)
@@ -432,47 +441,59 @@ func newResponser(out io.Writer, metype MethodType) rpcResponserPriv {
 		Logger.Panic().Str("type", metype.String()).Msg("Unknown method type")
 		panic("Unexpected method type")
 	}
+
 	return responser
 }
 
-func changeProtocolIfRequired(responser rpcResponserPriv, request *requestData) rpcResponserPriv {
-	if request.Jsonrpc == JsonRPCversion20s {
-		switch responser.(type) {
-		case *legacyStreamingResponse:
-			Logger.Info().Msg("Upgrading streaming protocol")
-			return newResponser(responser.Writer(), StreamingMethod)
-		}
+func changeProtocolIfRequired( //nolint:ireturn
+	responser rpcResponserPriv, request *requestData,
+) rpcResponserPriv {
+	if request.Jsonrpc != JSONRPCversion20s {
+		return responser
 	}
-	return responser
+
+	_, ok := responser.(*legacyStreamingResponse)
+	if !ok {
+		return responser
+	}
+
+	Logger.Info().Msg("Upgrading streaming protocol")
+
+	return newResponser(responser.Writer(), StreamingMethod)
 }
 
-// ReadFrom implements io.Reader
+// ReadFrom implements io.Reader.
 func (r *requestData) ReadFrom(re io.Reader) (n int64, err error) {
 	decoder := json.NewDecoder(re)
+
 	err = decoder.Decode(r)
 	if err != nil {
-		switch err.(type) {
-		case *json.UnmarshalTypeError:
+		var jsonErr *json.UnmarshalTypeError
+
+		var ourErr *_Error
+
+		if errors.As(err, &jsonErr) {
 			err = ErrInvalidRequest
-		case *_Error: //do nothing
-		default:
+		} else if !errors.As(err, &ourErr) {
+			// if this is not 'ours' error then return generic ParseError
 			err = ErrParseError
 		}
 	} else if decoder.More() {
 		Logger.Warn().Msg("Request contains more data. This is currently disallowed")
 		err = ErrBatchUnsupported
 	}
+
 	n = 0
+
 	return
 }
 
 type jsonRPCrequestPriv struct {
 	requestData
-	ctx context.Context
 	rpcResponserPriv
 	err error
 	req RequestDefinition
-	p   jsonRpcProcessorPriv
+	p   *JSONRPCProcessor
 	// NOTE(m): Do we need separate 'done' channel if we have context?
 	done chan struct{}
 	log  log.Logger
@@ -482,7 +503,7 @@ func (f *jsonRPCrequestPriv) Method() string {
 	return f.requestData.Method
 }
 
-func (f *jsonRPCrequestPriv) Version() JsonRPCversion {
+func (f *jsonRPCrequestPriv) Version() JSONRPCversion {
 	return f.Jsonrpc
 }
 
@@ -498,7 +519,9 @@ func (f *jsonRPCrequestPriv) readFromTransport() error {
 	r := f.req.Reader()
 	_, f.err = f.requestData.ReadFrom(r)
 	f.log = Logger.With().Str("method", f.Method()).Logger()
+
 	r.Close()
+
 	return f.err
 }
 
@@ -509,71 +532,78 @@ func (f *jsonRPCrequestPriv) ensureProtocol() {
 func (f *jsonRPCrequestPriv) Close() error {
 	// this is noop if we already upgraded
 	f.ensureProtocol()
+
 	if f.err != nil {
 		// For errors we ALWAYS disable payload limits
 		f.rpcResponserPriv.MaxResponse(0)
 		// we ended with errors somewhere
 		f.rpcResponserPriv.SetResponseError(f.err)
 		f.rpcResponserPriv.Close()
+
 		return f.err
 	}
+
 	return f.rpcResponserPriv.Close()
 }
 
-func (f *jsonRPCrequestPriv) process() error {
+func (f *jsonRPCrequestPriv) process(ctx context.Context) error {
 	// Prevent processing if we got errors on transport level
 	if f.err != nil {
 		return f.err
 	}
 
 	f.ensureProtocol()
-	f.rpcResponserPriv.SetID(f.ID)
+	f.SetID(f.ID)
 
 	if !f.isValid() {
 		f.err = ErrInvalidRequest
+
 		return f.err
 	}
 
 	metype := f.req.OutputMode()
+
 	m, err := f.p.method(f.requestData.Method, metype)
 	if err != nil {
 		f.err = err
+
 		return f.err
 	}
 
-	f.rpcResponserPriv.MaxResponse(int64(m.MaxResponse))
+	f.MaxResponse(int64(m.MaxResponse))
 
 	timeout := f.p.limit(metype).ExecTimeout
 	if timeout != 0 {
-		//We have some global timeout
-		//So check if method is time-bound too
-		//if no just use global timeout
-		//otherwise select lower value
+		// We have some global timeout
+		// So check if method is time-bound too
+		// if no just use global timeout
+		// otherwise select lower value
 		if m.ExecTimeout != 0 && m.ExecTimeout < timeout {
 			timeout = m.ExecTimeout
-
 		}
 	} else {
 		// No global limit so use from method
 		timeout = m.ExecTimeout
 	}
+
 	if timeout > 0 {
 		f.log.Debug().Dur("timeout", timeout).Msg("Seting time limit for method")
-		kontext, cancel := context.WithTimeout(f.ctx, timeout)
+		kontext, cancel := context.WithTimeout(ctx, timeout)
+		ctx = kontext
+
 		defer cancel()
-		f.ctx = kontext
 	}
 
 	go func() {
 		defer close(f.done)
-		m.Invoke(f.ctx, f, f)
+		m.Invoke(ctx, f, f)
 	}()
 	// 1) Timeout or we done
 	select {
-	case <-f.ctx.Done():
+	case <-ctx.Done():
 		// oooor transport error?
 		f.log.Info().Msg("timed out")
-		f.log.Info().Err(f.ctx.Err()).Msg("context error")
+		f.log.Info().Err(ctx.Err()).Msg("context error")
 		// this could be canceled too... but
 		// why it should be like that? if we get
 		// cancel from transport then whatever no one is
@@ -587,16 +617,18 @@ func (f *jsonRPCrequestPriv) process() error {
 		// This is just to ensure we won't hang forever if procedure
 		// is misbehaving
 		case <-time.NewTimer(time.Millisecond * 500).C:
-			f.log.Warn().Msg("procedure didn't exit gracefuly, forcing exit")
+			f.log.Warn().Msg("procedure didn't exit gracefully, forcing exit")
 		case <-f.done:
 		}
 	}
+
 	return f.err
 }
 
 // SetResponseError saves passed error
+// should have context.
 func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
-	if f.ctx.Err() != nil {
+	if f.err != nil {
 		f.log.Warn().Err(errs).Msg("trying to set error after deadline")
 	} else {
 		// should we keep original error or overwrite it with response?
@@ -605,13 +637,16 @@ func (f *jsonRPCrequestPriv) SetResponseError(errs error) error {
 			f.log.Warn().Err(err).Msg("error while setting error response")
 		}
 	}
+
 	return f.err
 }
 
 // SetResponseResult handle Reader case
+// should have context.
 func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
-	if f.ctx.Err() != nil {
+	if f.err != nil {
 		f.log.Warn().Msg("trying to set result after deadline")
+
 		return f.err
 	}
 
@@ -626,12 +661,11 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 				defer t.Stop()
 
 				select {
-				case <-f.ctx.Done(): // Meh, connection failed
 				case <-f.done: // Meh, we failed
 				case <-t.C:
 					f.log.Warn().Msg("forced flush after timeout")
 					// Force flush
-					f.rpcResponserPriv.Flush()
+					f.Flush()
 				}
 			}()
 		}
@@ -647,59 +681,65 @@ func (f *jsonRPCrequestPriv) SetResponseResult(result interface{}) error {
 	return f.err
 }
 
-func (p *jsonRpcProcessor) spawnRequest(context context.Context, request RequestDefinition, response io.Writer) jsonRPCrequestPriv {
+func (p *JSONRPCProcessor) spawnRequest(request RequestDefinition, response io.Writer) jsonRPCrequestPriv {
 	jsonRequest := jsonRPCrequestPriv{
-		ctx:              context,
 		req:              request,
 		rpcResponserPriv: newResponser(response, request.OutputMode()),
 		done:             make(chan struct{}),
 		p:                p,
 	}
+
 	return jsonRequest
 }
 
-// limit for given type
-func (p *jsonRpcProcessor) limit(metype MethodType) limits {
+// limit for given type.
+func (p *JSONRPCProcessor) limit(metype MethodType) limits {
 	return *p.limits[metype]
 }
 
-// method for given name
-func (p *jsonRpcProcessor) method(name string, metype MethodType) (*methodDef, error) {
+// method for given name.
+func (p *JSONRPCProcessor) method(name string, metype MethodType) (*MethodDef, error) {
 	// check if method with given name exists
-	ms, okm := p.methods[name]
+	method, okm := p.methods[name]
 	if !okm {
 		Logger.Error().Str("method", name).Msg("not found")
+
 		return nil, ErrMethodNotFound
 	}
 
 	// now check is requested type is supported
-	m, okm := ms[metype]
+	selectedMethod, okm := method[metype]
 	if !okm {
 		// We colud have added this method as legacy
 		// For now leave this as "compat"
 		if metype == StreamingMethod {
-			m, okm = ms[StreamingMethodLegacy]
+			selectedMethod, okm = method[StreamingMethodLegacy]
 		}
 	}
+
 	if !okm {
 		Logger.Error().Str("type", metype.String()).Str("method", name).Msg("required type for method not found")
+
 		return nil, ErrMethodNotFound
 	}
-	return m, nil
+
+	return selectedMethod, nil
 }
 
-// ProcessContext : Parse and process request from data
-func (p *jsonRpcProcessor) ProcessContext(kontext context.Context, request RequestDefinition, response io.Writer) error {
+// ProcessContext : Parse and process request from data.
+func (p *JSONRPCProcessor) ProcessContext(kontext context.Context,
+	request RequestDefinition, response io.Writer,
+) error {
 	// IMPORTANT!! When using real network dropped peer is signaled after 3 minutes!
 	// We should just check if any write success
 	// NEW: Check behavior after using connection context
-	jsonRequest := p.spawnRequest(kontext, request, response)
+	jsonRequest := p.spawnRequest(request, response)
 
 	if err := jsonRequest.readFromTransport(); err != nil {
 		Logger.Debug().Err(err).Msg("transport error")
 	}
 
-	if err := jsonRequest.process(); err != nil {
+	if err := jsonRequest.process(kontext); err != nil {
 		Logger.Debug().Err(err).Msg("process")
 	}
 

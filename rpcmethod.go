@@ -3,15 +3,30 @@ package rupicola
 import (
 	"bytes"
 	"context"
+	"encoding/ascii85"
 	"encoding/base64"
 	"io"
 	"os/exec"
 	"time"
 
+	"github.com/korbank/rupicola-go/config"
 	"github.com/korbank/rupicola-go/rupicolarpc"
 )
 
-func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
+func (m *MethodDef) execParamsLen() int {
+	switch m.InvokeInfo.Exec.Mode {
+	case config.ExecTypeDefault:
+		return len(m.InvokeInfo.Args)
+		// case config.ExecTypeShellWrapper:
+		// 	// Additional parameters:
+		// 	// '-c' and $method_name
+		// 	return len(m.InvokeInfo.Args) + len(m.Params) + 2
+		// default:
+	}
+	panic("unknown mode")
+}
+
+func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JSONRPCRequest) (*rupicolaRPCContext, *exec.Cmd, error) {
 	uncastedContext := req.UserData()
 	var ok bool
 	var castedContext *rupicolaRPCContext
@@ -28,7 +43,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		return nil, nil, rpcUnauthorizedError
 	}
 	// We will create this when needed
-	//var additionalParams map[string]interface{}
+	// var additionalParams map[string]interface{}
 	//	// Check if required arguments are present
 	params := req.Params()
 	if params == nil {
@@ -39,9 +54,10 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 	}
 
 	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
-	appArguments := make([]string, 0, len(m.InvokeInfo.Args))
+	appArguments := make([]string, 0, m.execParamsLen())
+
 	for _, arg := range m.InvokeInfo.Args {
-		skip, err := arg.evalueateArgs(params, buffer)
+		skip, err := evalueateArgs(arg, params, buffer)
 		if err != nil {
 			m.logger.Error().Err(err).Msg("error")
 			return nil, nil, err
@@ -52,8 +68,38 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 		buffer.Reset()
 	}
 
-	m.logger.Debug().Str("exec", m.InvokeInfo.Exec).Strs("args", appArguments).Msg("prepared method invocation")
-	process := exec.CommandContext(ctx, m.InvokeInfo.Exec, appArguments...)
+	var process *exec.Cmd
+	switch m.InvokeInfo.Exec.Mode {
+	case config.ExecTypeDefault:
+	case config.ExecTypeShellWrapper:
+		newArguments := make([]string, 0, len(m.Params)+2+len(appArguments))
+		newArguments = append(newArguments, "-c")
+		if len(appArguments) > 0 {
+			appArguments = append(newArguments, appArguments[0])
+		}
+		appArguments = append(appArguments, req.Method())
+		buffer.Reset()
+		for name := range m.Params {
+			arg := config.MethodArgs{
+				Param: name,
+			}
+			skip, err := evalueateArgs(arg, params, buffer)
+			if err != nil {
+				m.logger.Error().Err(err).Msg("error")
+				return nil, nil, err
+			}
+			if !skip {
+				appArguments = append(appArguments, buffer.String())
+			}
+			buffer.Reset()
+		}
+
+	default:
+		panic("should not happend")
+	}
+	m.logger.Debug().Stringer("exec", m.InvokeInfo.Exec).
+		Strs("args", appArguments).Msg("prepared method invocation")
+	process = exec.CommandContext(ctx, m.InvokeInfo.Exec.Path, appArguments...)
 
 	// Make it "better"
 	SetUserGroup(process, m)
@@ -70,7 +116,7 @@ func (m *MethodDef) prepareCommand(ctx context.Context, req rupicolarpc.JsonRpcR
 }
 
 // Invoke is implementation of jsonrpc.Invoker
-func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) (interface{}, error) {
+func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JSONRPCRequest) (interface{}, error) {
 	defer func() {
 		// We don't want close app when we reach panic inside this goroutine
 		if r := recover(); r != nil {
@@ -83,9 +129,10 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	// We can cancel or set deadline for current context (only shorter - default no limit)
 	_, process, err := m.prepareCommand(ctx, req)
 	if err != nil {
-		//out.SetResponseError(err)
+		// out.SetResponseError(err)
 		return nil, err
 	}
+	m.logger.Debug().Strs("args", process.Args).Msg("process prepared")
 	stdout, err := process.StdoutPipe()
 	if err != nil {
 		return nil, rupicolarpc.NewStandardErrorData(rupicolarpc.InternalError, "stdout")
@@ -100,12 +147,28 @@ func (m *MethodDef) Invoke(ctx context.Context, req rupicolarpc.JsonRpcRequest) 
 	writer := io.Writer(pw)
 	reader := io.ReadCloser(pr)
 
-	if m.Encoding == Base64 {
-		writerEncoder := base64.NewEncoder(base64.URLEncoding, writer)
+	switch m.Encoding {
+	case config.Base64, config.Base64Url:
+		var standard *base64.Encoding
+		if m.Encoding == config.Base64 {
+			standard = base64.StdEncoding
+		} else {
+			standard = base64.URLEncoding
+		}
+		writerEncoder := base64.NewEncoder(standard, writer)
 		// should we defer, or err check?
 		defer writerEncoder.Close()
 		writer = writerEncoder
+	case config.Base85:
+		writerEncoder := ascii85.NewEncoder(writer)
+		defer writerEncoder.Close()
+		writer = writerEncoder
+	case config.Utf8:
+		// NOOP
+	default:
+		panic("unknown encoding")
 	}
+
 	go func() {
 		time.Sleep(m.InvokeInfo.Delay)
 		m.logger.Debug().Msg("read loop started")

@@ -1,6 +1,8 @@
 package zerolog
 
 import (
+	"context"
+	"fmt"
 	"io/ioutil"
 	"math"
 	"net"
@@ -17,8 +19,10 @@ func (c Context) Logger() Logger {
 	return c.l
 }
 
-// Fields is a helper function to use a map to set fields using type assertion.
-func (c Context) Fields(fields map[string]interface{}) Context {
+// Fields is a helper function to use a map or slice to set fields using type assertion.
+// Only map[string]interface{} and []interface{} are accepted. []interface{} must
+// alternate string keys and arbitrary values, and extraneous ones are ignored.
+func (c Context) Fields(fields interface{}) Context {
 	c.l.context = appendFields(c.l.context, fields)
 	return c
 }
@@ -78,6 +82,17 @@ func (c Context) Str(key, val string) Context {
 // Strs adds the field key with val as a string to the logger context.
 func (c Context) Strs(key string, vals []string) Context {
 	c.l.context = enc.AppendStrings(enc.AppendKey(c.l.context, key), vals)
+	return c
+}
+
+// Stringer adds the field key with val.String() (or null if val is nil) to the logger context.
+func (c Context) Stringer(key string, val fmt.Stringer) Context {
+	if val != nil {
+		c.l.context = enc.AppendString(enc.AppendKey(c.l.context, key), val.String())
+		return c
+	}
+
+	c.l.context = enc.AppendInterface(enc.AppendKey(c.l.context, key), nil)
 	return c
 }
 
@@ -149,6 +164,15 @@ func (c Context) Errs(key string, errs []error) Context {
 // Err adds the field "error" with serialized err to the logger context.
 func (c Context) Err(err error) Context {
 	return c.AnErr(ErrorFieldName, err)
+}
+
+// Ctx adds the context.Context to the logger context. The context.Context is
+// not rendered in the error message, but is made available for hooks to use.
+// A typical use case is to extract tracing information from the
+// context.Context.
+func (c Context) Ctx(ctx context.Context) Context {
+	c.l.ctx = ctx
+	return c
 }
 
 // Bool adds the field key with val as a bool to the logger context.
@@ -315,8 +339,9 @@ func (ts timestampHook) Run(e *Event, level Level, msg string) {
 
 var th = timestampHook{}
 
-// Timestamp adds the current local time as UNIX timestamp to the logger context with the "time" key.
+// Timestamp adds the current local time to the logger context with the "time" key, formatted using zerolog.TimeFieldFormat.
 // To customize the key name, change zerolog.TimestampFieldName.
+// To customize the time format, change zerolog.TimeFieldFormat.
 //
 // NOTE: It won't dedupe the "time" key if the *Context has one already.
 func (c Context) Timestamp() Context {
@@ -394,17 +419,9 @@ func (c Context) CallerWithSkipFrameCount(skipFrameCount int) Context {
 	return c
 }
 
-type stackTraceHook struct{}
-
-func (sh stackTraceHook) Run(e *Event, level Level, msg string) {
-	e.Stack()
-}
-
-var sh = stackTraceHook{}
-
 // Stack enables stack trace printing for the error passed to Err().
 func (c Context) Stack() Context {
-	c.l = c.l.Hook(sh)
+	c.l.stack = true
 	return c
 }
 
